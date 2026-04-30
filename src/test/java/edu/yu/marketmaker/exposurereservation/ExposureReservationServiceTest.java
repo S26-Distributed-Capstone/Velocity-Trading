@@ -6,9 +6,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 /**
@@ -29,7 +34,7 @@ import static org.mockito.Mockito.*;
  */
 class ExposureReservationServiceTest {
 
-    private Repository<UUID, Reservation> reservationRepository;
+    private Repository<String, Reservation> reservationRepository;
     private ExposureReservationService service;
 
     @SuppressWarnings("unchecked")
@@ -37,6 +42,7 @@ class ExposureReservationServiceTest {
     void setUp() {
         reservationRepository = mock(Repository.class);
         when(reservationRepository.getAll()).thenReturn(Collections.emptyList());
+        when(reservationRepository.get(anyString())).thenReturn(Optional.empty());
         service = new ExposureReservationService(reservationRepository);
     }
 
@@ -44,86 +50,93 @@ class ExposureReservationServiceTest {
 
     @Test
     void grantsFullyWhenCapacityAvailable() {
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote("AAPL", 10, 10);
 
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.GRANTED, response.status());
-        assertEquals(10, response.grantedQuantity());
+        assertEquals(10, response.grantedBidQuantity());
+        assertEquals(10, response.grantedAskQuantity());
         assertNotNull(response.id());
         verify(reservationRepository).put(any(Reservation.class));
     }
 
     @Test
     void grantsFullCapacityOfExactly100() {
-        Quote quote = makeQuote("AAPL", 100);
+        Quote quote = makeQuote("AAPL", 100, 100);
 
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.GRANTED, response.status());
-        assertEquals(100, response.grantedQuantity());
+        assertEquals(100, response.grantedBidQuantity());
+        assertEquals(100, response.grantedAskQuantity());
     }
 
     @Test
     void grantsZeroQuantityAsGranted() {
-        Quote quote = makeQuote("AAPL", 0);
+        Quote quote = makeQuote("AAPL", 0, 0);
 
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.GRANTED, response.status());
-        assertEquals(0, response.grantedQuantity());
+        assertEquals(0, response.grantedBidQuantity());
+        assertEquals(0, response.grantedAskQuantity());
     }
 
     // Partial, quote quantity is reduced deterministically to maximum allowed size
 
     @Test
     void grantsPartiallyWhenCapacityInsufficient() {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 95, 95, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 95, 95, 95, 95, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote("AAPL", 10, 10);
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.PARTIAL, response.status());
-        assertEquals(5, response.grantedQuantity(), "Only 5 of 100 remaining");
+        assertEquals(5, response.grantedBidQuantity(), "Only 5 of 100 remaining");
+        assertEquals(5, response.grantedAskQuantity(), "Only 5 of 100 remaining");
     }
 
     @Test
     void grantsPartiallyWithExactly1UnitRemaining() {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 99, 99, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 99, 99, 99, 99, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 50);
+        Quote quote = makeQuote("AAPL", 50, 50);
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.PARTIAL, response.status());
-        assertEquals(1, response.grantedQuantity());
+        assertEquals(1, response.grantedBidQuantity());
+        assertEquals(1, response.grantedAskQuantity());
     }
 
     // Denied, quote not publishe
 
     @Test
     void deniedWhenNoCapacityRemaining() {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 100, 100, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 100, 100, 100, 100, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote("AAPL", 10, 10);
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.DENIED, response.status());
-        assertEquals(0, response.grantedQuantity());
+        assertEquals(0, response.grantedBidQuantity());
+        assertEquals(0, response.grantedAskQuantity());
     }
 
     @Test
     void deniedWhenOverCapacity() {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 120, 120, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 120, 120, 120, 120, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote("AAPL", 10, 10);
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.DENIED, response.status());
-        assertEquals(0, response.grantedQuantity());
+        assertEquals(0, response.grantedBidQuantity());
+        assertEquals(0, response.grantedAskQuantity());
     }
 
     // Global capacity is shared across all symbols
@@ -131,168 +144,152 @@ class ExposureReservationServiceTest {
     @Test
     void multipleSymbolsShareGlobalCapacity() {
         List<Reservation> existing = List.of(
-                new Reservation(UUID.randomUUID(), "AAPL", 30, 30, ReservationStatus.GRANTED),
-                new Reservation(UUID.randomUUID(), "GOOG", 40, 40, ReservationStatus.GRANTED)
+                new Reservation("AAPL", "AAPL", 30, 30, 30, 30, ReservationStatus.GRANTED),
+                new Reservation("GOOG", "GOOG", 40, 40, 40, 40, ReservationStatus.GRANTED)
         );
         when(reservationRepository.getAll()).thenReturn(existing);
 
-        Quote quote = makeQuote("MSFT", 50);
+        Quote quote = makeQuote("MSFT", 50, 50);
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.PARTIAL, response.status());
-        assertEquals(30, response.grantedQuantity());
+        assertEquals(30, response.grantedBidQuantity());
+        assertEquals(30, response.grantedAskQuantity());
     }
 
     @Test
     void releasedReservationsDoNotCountTowardCapacity() {
-        // A reservation with granted=0 (released) should not consume capacity
         List<Reservation> existing = List.of(
-                new Reservation(UUID.randomUUID(), "AAPL", 50, 0, ReservationStatus.GRANTED),
-                new Reservation(UUID.randomUUID(), "GOOG", 30, 30, ReservationStatus.GRANTED)
+                new Reservation("AAPL", "AAPL", 50, 0, 50, 0, ReservationStatus.GRANTED),
+                new Reservation("GOOG", "GOOG", 30, 30, 30, 30, ReservationStatus.GRANTED)
         );
         when(reservationRepository.getAll()).thenReturn(existing);
 
-        // Only 30 actually granted, so 70 available
-        Quote quote = makeQuote("MSFT", 70);
+        Quote quote = makeQuote("MSFT", 70, 70);
         ReservationResponse response = service.createReservation(quote);
 
         assertEquals(ReservationStatus.GRANTED, response.status());
-        assertEquals(70, response.grantedQuantity());
+        assertEquals(70, response.grantedBidQuantity());
+        assertEquals(70, response.grantedAskQuantity());
+    }
+
+    @Test
+    void quoteReplacementReleasesOldReservationBeforeGrantingNew() {
+        Reservation current = new Reservation("AAPL", "AAPL", 40, 25, 40, 10, ReservationStatus.PARTIAL);
+        when(reservationRepository.get("AAPL")).thenReturn(Optional.of(current));
+
+        Quote quote = makeQuote("AAPL", 20, 20);
+        service.createReservation(quote);
+
+        ArgumentCaptor<Reservation> captor = ArgumentCaptor.forClass(Reservation.class);
+        verify(reservationRepository, times(2)).put(captor.capture());
+        List<Reservation> saved = captor.getAllValues();
+
+        assertEquals(0, saved.get(0).grantedBid());
+        assertEquals(0, saved.get(0).grantedAsk());
+        assertEquals(20, saved.get(1).grantedBid());
+        assertEquals(20, saved.get(1).grantedAsk());
     }
 
     // Apply fill, Exposure reserved: 40, Fill occurs: sell 10, Remaining reserved exposure: 30
 
     @Test
-    void applyFillReducesGrantedAmount() {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 40, 40, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+    void applyFillBuyReducesBidGrant() {
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 40, 40, 40, 40, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        int freed = service.applyFill(id, 10);
+        int freed = service.applyFill(symbol, 10, Side.BUY);
 
         assertEquals(10, freed);
         ArgumentCaptor<Reservation> captor = ArgumentCaptor.forClass(Reservation.class);
         verify(reservationRepository).put(captor.capture());
-        assertEquals(30, captor.getValue().granted());
+        assertEquals(30, captor.getValue().grantedBid());
+        assertEquals(40, captor.getValue().grantedAsk());
     }
 
     @Test
-    void applyFillFullyConsumesReservation() {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 20, 20, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+    void applyFillSellReducesAskGrant() {
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 40, 40, 40, 40, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        int freed = service.applyFill(id, 20);
+        int freed = service.applyFill(symbol, 15, Side.SELL);
 
-        assertEquals(20, freed);
+        assertEquals(15, freed);
         ArgumentCaptor<Reservation> captor = ArgumentCaptor.forClass(Reservation.class);
         verify(reservationRepository).put(captor.capture());
-        assertEquals(0, captor.getValue().granted());
-    }
-
-    @Test
-    void applyFillClampsToGrantedAmount() {
-        // Fill larger than what was granted, should not go negative
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 10, 5, ReservationStatus.PARTIAL);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
-
-        int freed = service.applyFill(id, 20);
-
-        assertEquals(5, freed, "Cannot free more than granted");
-        ArgumentCaptor<Reservation> captor = ArgumentCaptor.forClass(Reservation.class);
-        verify(reservationRepository).put(captor.capture());
-        assertEquals(0, captor.getValue().granted());
+        assertEquals(40, captor.getValue().grantedBid());
+        assertEquals(25, captor.getValue().grantedAsk());
     }
 
     @Test
     void applyFillThrowsWhenReservationNotFound() {
-        UUID id = UUID.randomUUID();
-        when(reservationRepository.get(id)).thenReturn(Optional.empty());
+        when(reservationRepository.get("AAPL")).thenReturn(Optional.empty());
 
-        assertThrows(RuntimeException.class, () -> service.applyFill(id, 5));
+        assertThrows(RuntimeException.class, () -> service.applyFill("AAPL", 5, Side.BUY));
     }
 
     // Release, Exposure associated with an expired quote, must be released
 
     @Test
     void releaseFreesAllRemainingCapacity() {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 30, 30, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 30, 30, 30, 30, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        int freed = service.release(id);
+        int freed = service.release(symbol);
 
-        assertEquals(30, freed);
+        assertEquals(60, freed);
         ArgumentCaptor<Reservation> captor = ArgumentCaptor.forClass(Reservation.class);
         verify(reservationRepository).put(captor.capture());
-        assertEquals(0, captor.getValue().granted());
+        assertEquals(0, captor.getValue().grantedBid());
+        assertEquals(0, captor.getValue().grantedAsk());
     }
 
     @Test
     void releaseAfterPartialFillFreesRemainder() {
-        // Was 30, filled 10, now granted=20 -> release frees 20
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 30, 20, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 30, 20, 30, 5, ReservationStatus.PARTIAL);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        int freed = service.release(id);
+        int freed = service.release(symbol);
 
-        assertEquals(20, freed);
-    }
-
-    @Test
-    void releaseAlreadyEmptyReturnsZero() {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 30, 0, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
-
-        int freed = service.release(id);
-
-        assertEquals(0, freed);
+        assertEquals(25, freed);
     }
 
     @Test
     void releaseThrowsWhenReservationNotFound() {
-        UUID id = UUID.randomUUID();
-        when(reservationRepository.get(id)).thenReturn(Optional.empty());
+        when(reservationRepository.get("AAPL")).thenReturn(Optional.empty());
 
-        assertThrows(RuntimeException.class, () -> service.release(id));
+        assertThrows(RuntimeException.class, () -> service.release("AAPL"));
     }
 
 
     // Exposure state, debugging/verification endpoint
 
     @Test
-    void exposureStateReflectsActiveReservations() {
+    void exposureStateReflectsBidAndAskUsage() {
         List<Reservation> reservations = List.of(
-                new Reservation(UUID.randomUUID(), "AAPL", 20, 20, ReservationStatus.GRANTED),
-                new Reservation(UUID.randomUUID(), "GOOG", 30, 15, ReservationStatus.PARTIAL),
-                new Reservation(UUID.randomUUID(), "MSFT", 10, 0, ReservationStatus.DENIED)
+                new Reservation("AAPL", "AAPL", 20, 20, 20, 20, ReservationStatus.GRANTED),
+                new Reservation("GOOG", "GOOG", 30, 15, 30, 10, ReservationStatus.PARTIAL),
+                new Reservation("MSFT", "MSFT", 10, 0, 10, 0, ReservationStatus.DENIED)
         );
         when(reservationRepository.getAll()).thenReturn(reservations);
 
         ExposureState state = service.getExposureState();
 
-        assertEquals(35, state.currentUsage(), "20 + 15 + 0 = 35");
+        assertEquals(35, state.bidUsage(), "20 + 15 + 0 = 35");
+        assertEquals(30, state.askUsage());
         assertEquals(100, state.totalCapacity());
         assertEquals(2, state.activeReservations(), "Only 2 have granted > 0");
-    }
-
-    @Test
-    void exposureStateEmptyWhenNoReservations() {
-        ExposureState state = service.getExposureState();
-
-        assertEquals(0, state.currentUsage());
-        assertEquals(100, state.totalCapacity());
-        assertEquals(0, state.activeReservations());
     }
 
     // Reservation is persisted, state survives restarts
 
     @Test
     void reservationIsPersistedOnCreate() {
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote("AAPL", 10, 10);
 
         service.createReservation(quote);
 
@@ -300,31 +297,36 @@ class ExposureReservationServiceTest {
         verify(reservationRepository).put(captor.capture());
 
         Reservation saved = captor.getValue();
+        assertEquals("AAPL", saved.id());
         assertEquals("AAPL", saved.symbol());
-        assertEquals(10, saved.granted());
-        assertEquals(10, saved.requested());
+        assertEquals(10, saved.requestedBid());
+        assertEquals(10, saved.grantedBid());
+        assertEquals(10, saved.requestedAsk());
+        assertEquals(10, saved.grantedAsk());
         assertEquals(ReservationStatus.GRANTED, saved.status());
     }
 
     @Test
     void deniedReservationIsAlsoPersisted() {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 100, 100, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 100, 100, 100, 100, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote("AAPL", 10, 10);
         service.createReservation(quote);
 
         ArgumentCaptor<Reservation> captor = ArgumentCaptor.forClass(Reservation.class);
-        // Two puts: one for existing (from mock setup) and one for new
         verify(reservationRepository).put(captor.capture());
         Reservation saved = captor.getValue();
-        assertEquals(0, saved.granted());
+
+        assertEquals(0, saved.grantedBid());
+        assertEquals(0, saved.grantedAsk());
         assertEquals(ReservationStatus.DENIED, saved.status());
     }
 
 
-    private Quote makeQuote(String symbol, int askQty) {
-        return new Quote(symbol, 99.0, 10, 101.0, askQty, UUID.randomUUID(),
+    private Quote makeQuote(String symbol, int bidQty, int askQty) {
+        return new Quote(symbol, 99.0, bidQty, 101.0, askQty, UUID.randomUUID(),
                 System.currentTimeMillis() + 30_000);
     }
 }
+

@@ -9,145 +9,167 @@ import java.util.*;
 
 /**
  * Service responsible for managing exposure limits and reservations.
- * Handles the logic for creating reservations against available capacity,
- * applying fills to reduce open exposure, and releasing unused reservations.
+ * Tracks bid and ask exposure independently, each capped at the global limit.
+ * Bid exposure represents potential long position increases.
+ * Ask exposure represents potential short position decreases.
  */
 public class ExposureReservationService {
     private final Logger logger;
-    private final Repository<UUID, Reservation> reservations; // Map of id to reservation
+    private final Repository<String, Reservation> reservations;
 
-    private static final int MAX_RESERVATION_LIMIT = 100; // Absolute max limit for the system
+    private static final int MAX_RESERVATION_LIMIT = 100;
 
-    public ExposureReservationService(Repository<UUID, Reservation> repo) {
+    public ExposureReservationService(Repository<String, Reservation> repo) {
         this.reservations = repo;
         this.logger = LoggerFactory.getLogger(ExposureReservationService.class);
     }
 
     /**
-     * Creates a new exposure reservation.
-     * Checks current usage against limits and grants full, partial, or no capacity.
+     * Creates a new exposure reservation for both bid and ask sides of a quote.
+     * Each side is checked independently against the global limit.
      *
-     * @param quote The requested quote.
-     * @return The response containing the reservation ID and the actual granted quantity.
+     * @param quote The requested quote containing bid and ask quantities.
+     * @return The response containing the reservation ID and the actual granted quantities per side.
      */
     public synchronized ReservationResponse createReservation(Quote quote) {
-        logger.info("Creating reservation for Symbol: {}, AskQty: {}", quote.symbol(), quote.askQuantity());
+        logger.info("Creating reservation for Symbol: {}, BidQty: {}, AskQty: {}",
+                quote.symbol(), quote.bidQuantity(), quote.askQuantity());
 
-        // Calculate total currently granted exposure globally by summing all active reservations
-        int currentUsage = reservations.getAll().stream()
-                .mapToInt(Reservation::granted)
+        // Quote replacement: release the old reservation first if this symbol is already active.
+        if (reservations.get(quote.symbol()).isPresent()) {
+            release(quote.symbol());
+        }
+
+        // Calculate current bid and ask usage separately
+        int currentBidUsage = reservations.getAll().stream()
+                .mapToInt(Reservation::grantedBid)
+                .sum();
+        int currentAskUsage = reservations.getAll().stream()
+                .mapToInt(Reservation::grantedAsk)
                 .sum();
 
-        logger.debug("Current global exposure usage: {}/{}", currentUsage, MAX_RESERVATION_LIMIT);
+        logger.debug("Current exposure usage: Bid={}/{}, Ask={}/{}",
+                currentBidUsage, MAX_RESERVATION_LIMIT, currentAskUsage, MAX_RESERVATION_LIMIT);
 
-        // Calculate what is remaining
-        int available = Math.max(0, MAX_RESERVATION_LIMIT - currentUsage);
+        // Calculate available capacity per side
+        int availableBid = Math.max(0, MAX_RESERVATION_LIMIT - currentBidUsage);
+        int availableAsk = Math.max(0, MAX_RESERVATION_LIMIT - currentAskUsage);
 
-        // Determine request size (using greater of bid/ask if bidirectional, or just ask as per previous code)
-        int requestedQty = Math.max(0, quote.askQuantity());
+        // Determine requested quantities
+        int requestedBid = Math.max(0, quote.bidQuantity());
+        int requestedAsk = Math.max(0, quote.askQuantity());
 
-        // Grant only what is available, never exceeding the limit
-        int granted = Math.min(requestedQty, available);
+        // Grant only what is available per side, never exceeding the limit
+        int grantedBid = Math.min(requestedBid, availableBid);
+        int grantedAsk = Math.min(requestedAsk, availableAsk);
 
-        ReservationStatus status;
-        if (granted == 0 && requestedQty > 0) status = ReservationStatus.DENIED;
-        else if (granted < requestedQty) status = ReservationStatus.PARTIAL;
-        else status = ReservationStatus.GRANTED;
+        // Determine overall status based on both sides
+        ReservationStatus status = determineStatus(requestedBid, grantedBid, requestedAsk, grantedAsk);
 
-        Reservation r = new Reservation(UUID.randomUUID(), quote.symbol(), requestedQty, granted, status);
+        Reservation r = new Reservation(quote.symbol(), quote.symbol(),
+                requestedBid, grantedBid, requestedAsk, grantedAsk, status);
 
-        // Save the reservation to "lock in" this exposure usage for future requests
         reservations.put(r);
 
-        logger.info("Reservation result: ID={}, Status={}, Granted={}", r.id(), status, granted);
-        return new ReservationResponse(r.id(), r.status(), r.granted());
+        logger.info("Reservation result: ID={}, Status={}, GrantedBid={}, GrantedAsk={}",
+                r.id(), status, grantedBid, grantedAsk);
+        return new ReservationResponse(r.id(), r.status(), r.grantedBid(), r.grantedAsk());
     }
 
     /**
-     * Applies a fill to an active reservation.
-     * When a trade executes, the reserved exposure is converted to actual position (not tracked here),
+     * Applies a fill to an active reservation on a specific side.
+     * When a trade executes, the reserved exposure is converted to actual position,
      * so we free up the reserved capacity corresponding to the fill.
      *
-     * @param id The UUID of the reservation.
+     * @param symbol    The symbol key of the reservation.
      * @param filledQty The quantity that was filled.
+     * @param side      The side of the fill (BUY reduces bid exposure, SELL reduces ask exposure).
      * @return The amount of capacity freed by this operation.
      * @throws RuntimeException if the reservation is not found.
      */
-    public synchronized int applyFill(UUID id, int filledQty) {
-        logger.info("Applying fill: ID={}, FilledQty={}", id, filledQty);
+    public synchronized int applyFill(String symbol, int filledQty, Side side) {
+        logger.info("Applying fill: symbol={}, FilledQty={}, Side={}", symbol, filledQty, side);
 
-        Optional<Reservation> r = reservations.get(id); // .get returns the object directly or null based on Repository interface convention used in previous context, adjusting if Optional is used
-        if(r.isEmpty()) {
-            logger.error("Failed to apply fill: Reservation ID {} not found", id);
+        Optional<Reservation> r = reservations.get(symbol);
+        if (r.isEmpty()) {
+            logger.error("Failed to apply fill: reservation for symbol {} not found", symbol);
             throw new RuntimeException("Reservation not found");
         }
 
         Reservation reservation = r.get();
-        int freed = reduceGrantOnFill(reservation, filledQty);
+        int freed = reduceGrantOnFill(reservation, filledQty, side);
 
-        logger.info("Fill applied successfully: ID={}, FreedCapacity={}", id, freed);
+        logger.info("Fill applied successfully: symbol={}, Side={}, FreedCapacity={}", symbol, side, freed);
         return freed;
     }
 
     /**
-     * Releases all remaining capacity for a specific reservation.
-     * This is typically called when a quote is cancelled.
+     * Releases all remaining capacity for a specific reservation on both sides.
+     * This is typically called when a quote is cancelled or expires.
      *
-     * @param id The UUID of the reservation.
-     * @return The total capacity freed.
+     * @param symbol The symbol key of the reservation.
+     * @return The total capacity freed (bid + ask).
      * @throws RuntimeException if the reservation is not found.
      */
-    public synchronized int release(UUID id) {
-        logger.info("Releasing reservation: ID={}", id);
+    public synchronized int release(String symbol) {
+        logger.info("Releasing reservation: symbol={}", symbol);
 
-        Optional<Reservation> r = reservations.get(id);
-        if(r.isEmpty()) {
-            logger.error("Failed to release: Reservation ID {} not found", id);
+        Optional<Reservation> r = reservations.get(symbol);
+        if (r.isEmpty()) {
+            logger.error("Failed to release: reservation for symbol {} not found", symbol);
             throw new RuntimeException("Reservation not found");
         }
 
         Reservation reservation = r.get();
         int freed = releaseRemaining(reservation);
 
-        logger.info("Reservation released: ID={}, FreedCapacity={}", id, freed);
+        logger.info("Reservation released: symbol={}, FreedCapacity={}", symbol, freed);
         return freed;
     }
 
     /**
-     * Reduces the granted (reserved) amount based on a fill.
-     * If 100 units are reserved and 50 are filled, the reservation drops to 50.
+     * Reduces the granted (reserved) amount on a specific side based on a fill.
      *
-     * @param r The reservation to modify.
+     * @param r       The reservation to modify.
      * @param fillQty The quantity filled.
-     * @return The amount of capacity to free (min of current granted and fill quantity).
+     * @param side    The side of the fill.
+     * @return The amount of capacity freed.
      */
-    private int reduceGrantOnFill(Reservation r, int fillQty) {
-        int toFree = Math.min(r.granted(), fillQty);
-        int newGranted = r.granted() - toFree;
+    private int reduceGrantOnFill(Reservation r, int fillQty, Side side) {
+        int toFree;
+        Reservation updated;
 
-        logger.debug("Reducing grant (Internal): ID={}, Granted={}, Fill={}, NewGranted={}, Freed={}",
-                r.id(), r.granted(), fillQty, newGranted, toFree);
+        if (side == Side.BUY) {
+            toFree = Math.min(r.grantedBid(), fillQty);
+            int newGrantedBid = r.grantedBid() - toFree;
+            updated = new Reservation(r.id(), r.symbol(),
+                    r.requestedBid(), newGrantedBid, r.requestedAsk(), r.grantedAsk(), r.status());
+        } else {
+            toFree = Math.min(r.grantedAsk(), fillQty);
+            int newGrantedAsk = r.grantedAsk() - toFree;
+            updated = new Reservation(r.id(), r.symbol(),
+                    r.requestedBid(), r.grantedBid(), r.requestedAsk(), newGrantedAsk, r.status());
+        }
 
-        // Update record
-        Reservation updated = new Reservation(r.id(), r.symbol(), r.requested(), newGranted, r.status());
+        logger.debug("Reducing grant: ID={}, Side={}, Fill={}, Freed={}", r.id(), side, fillQty, toFree);
         reservations.put(updated);
-
         return toFree;
     }
 
     /**
-     * Sets the granted amount to zero, effectively releasing the entire reservation.
+     * Sets both granted amounts to zero, effectively releasing the entire reservation.
      *
      * @param r The reservation to release.
-     * @return The amount of capacity that was freed.
+     * @return The total amount of capacity freed (bid + ask).
      */
     private int releaseRemaining(Reservation r) {
-        int toFree = r.granted();
+        int toFree = r.grantedBid() + r.grantedAsk();
 
-        logger.debug("Releasing remaining (Internal): ID={}, Granted={}, Freed={}", r.id(), r.granted(), toFree);
+        logger.debug("Releasing remaining: ID={}, FreedBid={}, FreedAsk={}, TotalFreed={}",
+                r.id(), r.grantedBid(), r.grantedAsk(), toFree);
 
-        // Update record
-        Reservation updated = new Reservation(r.id(), r.symbol(), r.requested(), 0, r.status());
+        Reservation updated = new Reservation(r.id(), r.symbol(),
+                r.requestedBid(), 0, r.requestedAsk(), 0, r.status());
         reservations.put(updated);
 
         return toFree;
@@ -156,13 +178,31 @@ public class ExposureReservationService {
     /**
      * Calculates the current system-wide exposure state.
      *
-     * @return Snapshot of usage, capacity, and active count.
+     * @return Snapshot of bid/ask usage, capacity, and active count.
      */
     public ExposureState getExposureState() {
-        int totalUsage = reservations.getAll().stream().mapToInt(Reservation::granted).sum();
-        int activeCount = (int) reservations.getAll().stream().filter(r -> r.granted() > 0).count();
+        int bidUsage = reservations.getAll().stream().mapToInt(Reservation::grantedBid).sum();
+        int askUsage = reservations.getAll().stream().mapToInt(Reservation::grantedAsk).sum();
+        int activeCount = (int) reservations.getAll().stream()
+                .filter(r -> r.grantedBid() > 0 || r.grantedAsk() > 0)
+                .count();
 
-        logger.debug("Exposure state: Usage={}/{}, ActiveReservations={}", totalUsage, MAX_RESERVATION_LIMIT, activeCount);
-        return new ExposureState(totalUsage, MAX_RESERVATION_LIMIT, activeCount);
+        logger.debug("Exposure state: BidUsage={}/{}, AskUsage={}/{}, ActiveReservations={}",
+                bidUsage, MAX_RESERVATION_LIMIT, askUsage, MAX_RESERVATION_LIMIT, activeCount);
+        return new ExposureState(bidUsage, askUsage, MAX_RESERVATION_LIMIT, activeCount);
+    }
+
+    /**
+     * Determines the overall reservation status based on what was granted vs requested on both sides.
+     */
+    private ReservationStatus determineStatus(int requestedBid, int grantedBid, int requestedAsk, int grantedAsk) {
+        boolean bidFullyGranted = grantedBid >= requestedBid;
+        boolean askFullyGranted = grantedAsk >= requestedAsk;
+        boolean bidDenied = grantedBid == 0 && requestedBid > 0;
+        boolean askDenied = grantedAsk == 0 && requestedAsk > 0;
+
+        if (bidDenied && askDenied) return ReservationStatus.DENIED;
+        if (bidFullyGranted && askFullyGranted) return ReservationStatus.GRANTED;
+        return ReservationStatus.PARTIAL;
     }
 }

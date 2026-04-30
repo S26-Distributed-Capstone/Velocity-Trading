@@ -1,12 +1,10 @@
 package edu.yu.marketmaker.model;
 
-
-import java.util.UUID;
-
 public record ReservationResponse(
-        UUID id,
+        String id,
         ReservationStatus status,
-        int grantedQuantity
+        int grantedBidQuantity,
+        int grantedAskQuantity
 )
 {
 

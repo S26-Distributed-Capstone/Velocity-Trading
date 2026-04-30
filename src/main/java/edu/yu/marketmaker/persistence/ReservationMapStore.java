@@ -5,7 +5,6 @@ import edu.yu.marketmaker.model.Reservation;
 
 import java.util.Collection;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
@@ -13,24 +12,24 @@ import java.util.stream.Collectors;
  * This class bridges the Hazelcast IMap with PostgreSQL persistence
  * by converting between Reservation records and ReservationEntity objects.
  */
-public class ReservationMapStore implements MapStore<UUID, Reservation> {
+public class ReservationMapStore implements MapStore<String, Reservation> {
 
-    private final BaseJpaRepository<ReservationEntity, UUID> repository;
+    private final BaseJpaRepository<ReservationEntity, String> repository;
 
-    public ReservationMapStore(BaseJpaRepository<ReservationEntity, UUID> repository) {
+    public ReservationMapStore(BaseJpaRepository<ReservationEntity, String> repository) {
         this.repository = repository;
     }
 
     // --- MapStore Write Methods ---
 
     @Override
-    public void store(UUID key, Reservation reservation) {
+    public void store(String key, Reservation reservation) {
         ReservationEntity entity = ReservationEntity.fromRecord(reservation);
         repository.save(entity);
     }
 
     @Override
-    public void storeAll(Map<UUID, Reservation> map) {
+    public void storeAll(Map<String, Reservation> map) {
         var entities = map.values().stream()
                 .map(ReservationEntity::fromRecord)
                 .collect(Collectors.toList());
@@ -38,37 +37,37 @@ public class ReservationMapStore implements MapStore<UUID, Reservation> {
     }
 
     @Override
-    public void delete(UUID key) {
+    public void delete(String key) {
         repository.deleteById(key);
     }
 
     @Override
-    public void deleteAll(Collection<UUID> keys) {
+    public void deleteAll(Collection<String> keys) {
         repository.deleteAllById(keys);
     }
 
     // --- MapLoader Read Methods ---
 
     @Override
-    public Reservation load(UUID key) {
+    public Reservation load(String key) {
         return repository.findById(key)
                 .map(ReservationEntity::toRecord)
                 .orElse(null);
     }
 
     @Override
-    public Map<UUID, Reservation> loadAll(Collection<UUID> keys) {
+    public Map<String, Reservation> loadAll(Collection<String> keys) {
         return repository.findAllById(keys).stream()
                 .collect(Collectors.toMap(
-                        ReservationEntity::getId,
-                        ReservationEntity::toRecord
+                        entity -> entity.getId().toString(),
+                        entity -> entity.toRecord()
                 ));
     }
 
     @Override
-    public Iterable<UUID> loadAllKeys() {
+    public Iterable<String> loadAllKeys() {
         return repository.findAll().stream()
-                .map(ReservationEntity::getId)
+                .map(entity -> entity.getId().toString())
                 .collect(Collectors.toList());
     }
 }

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MarketMaker Test Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #0f172a; color: #e2e8f0; }
+    h1 { margin-bottom: 4px; }
+    .muted { color: #94a3b8; margin-bottom: 16px; }
+    .row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .card { background: #1e293b; border-radius: 8px; padding: 12px 16px; min-width: 180px; }
+    .label { color: #94a3b8; font-size: 12px; text-transform: uppercase; }
+    .value { font-size: 24px; margin-top: 4px; }
+    .status-pass { color: #22c55e; }
+    .status-fail { color: #ef4444; }
+    .status-running { color: #f59e0b; }
+    table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #334155; font-size: 14px; }
+    th { color: #94a3b8; font-weight: 600; }
+    tr:last-child td { border-bottom: none; }
+  </style>
+</head>
+<body>
+  <h1>MarketMaker Integration Test</h1>
+  <div class="muted">Live view of MarketMakerTest</div>
+
+  <div class="row">
+    <div class="card">
+      <div class="label">Overall Status</div>
+      <div id="overallStatus" class="value">IDLE</div>
+    </div>
+    <div class="card">
+      <div class="label">Current Step</div>
+      <div id="currentStep" class="value" style="font-size:18px;">Not started</div>
+    </div>
+    <div class="card">
+      <div class="label">Bid Usage</div>
+      <div id="bidUsage" class="value">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Ask Usage</div>
+      <div id="askUsage" class="value">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Active Reservations</div>
+      <div id="activeReservations" class="value">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Total Reservation Available</div>
+      <div id="totalReservationAvailable" class="value">0</div>
+    </div>
+    <div class="card">
+      <div class="label">Bid/Ask Available</div>
+      <div id="sideAvailability" class="value" style="font-size:18px;">0 / 0</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom: 12px;">
+    <div class="label">Message</div>
+    <div id="message" style="margin-top: 8px;">Waiting...</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Step</th>
+        <th>Status</th>
+        <th>Message</th>
+        <th>Exposure</th>
+      </tr>
+    </thead>
+    <tbody id="events"></tbody>
+  </table>
+
+  <script>
+    function statusClass(status) {
+      const s = (status || "").toUpperCase();
+      if (s === "PASS") return "status-pass";
+      if (s === "FAIL") return "status-fail";
+      return "status-running";
+    }
+
+    function render(state) {
+      const overall = document.getElementById("overallStatus");
+      overall.textContent = state.overallStatus;
+      overall.className = "value " + statusClass(state.overallStatus);
+
+      document.getElementById("currentStep").textContent = state.currentStep;
+      document.getElementById("message").textContent = state.message;
+      document.getElementById("bidUsage").textContent = state.bidUsage ?? "-";
+      document.getElementById("askUsage").textContent = state.askUsage ?? "-";
+      document.getElementById("activeReservations").textContent = state.activeReservations ?? "-";
+      document.getElementById("totalReservationAvailable").textContent = state.totalReservationAvailable ?? "-";
+      document.getElementById("sideAvailability").textContent =
+        (state.bidAvailable ?? "-") + " / " + (state.askAvailable ?? "-");
+
+      const tbody = document.getElementById("events");
+      tbody.innerHTML = "";
+      const events = (state.events || []);
+      for (const e of events) {
+        const tr = document.createElement("tr");
+        tr.innerHTML =
+          "<td>" + new Date(e.timestamp).toLocaleTimeString() + "</td>" +
+          "<td>" + e.step + "</td>" +
+          "<td class='" + statusClass(e.status) + "'>" + e.status + "</td>" +
+          "<td>" + e.message + "</td>" +
+          "<td>B:" + e.bidUsage + " A:" + e.askUsage + " R:" + e.activeReservations +
+          " Avail:" + ((e.totalCapacity * 2) - e.bidUsage - e.askUsage) + "</td>";
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/state", { cache: "no-store" });
+        if (!res.ok) return;
+        const state = await res.json();
+        render(state);
+      } catch (e) {
+        // Keep dashboard alive while test process starts/stops.
+      }
+    }
+
+    setInterval(refresh, 750);
+    refresh();
+  </script>
+</body>
+</html>
+

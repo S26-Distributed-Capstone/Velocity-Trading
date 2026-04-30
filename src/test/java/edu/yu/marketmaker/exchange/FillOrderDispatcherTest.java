@@ -307,7 +307,7 @@ class FillOrderDispatcherTest {
         ArgumentCaptor<Fill> captor = ArgumentCaptor.forClass(Fill.class);
         verify(fillSender).sendFill(captor.capture());
         assertEquals("GOOG", captor.getValue().symbol());
-        assertEquals(Side.SELL, captor.getValue().side());
+        assertEquals(Side.BUY, captor.getValue().side());
     }
 
     @Test

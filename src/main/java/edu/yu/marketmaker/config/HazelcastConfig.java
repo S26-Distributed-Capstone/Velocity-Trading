@@ -211,7 +211,7 @@ private void configureNetwork(Config config) {
      * Provides the reservations IMap for dependency injection.
      */
     @Bean
-    public IMap<UUID, Reservation> reservationsMap(HazelcastInstance hazelcastInstance) {
+    public IMap<String, Reservation> reservationsMap(HazelcastInstance hazelcastInstance) {
         return hazelcastInstance.getMap(RESERVATIONS_MAP_NAME);
     }
 
@@ -253,7 +253,7 @@ private void configureNetwork(Config config) {
      * Provides the Reservation repository for dependency injection.
      */
     @Bean
-    public Repository<UUID, Reservation> reservationRepository(IMap<UUID, Reservation> reservationsMap) {
+    public Repository<String, Reservation> reservationRepository(IMap<String, Reservation> reservationsMap) {
         return new HazelcastRepository<>(reservationsMap);
     }
 
@@ -261,7 +261,7 @@ private void configureNetwork(Config config) {
      * Provides the ExposureReservationService for dependency injection.
      */
     @Bean
-    public ExposureReservationService exposureReservationService(Repository<UUID, Reservation> reservationRepository) {
+    public ExposureReservationService exposureReservationService(Repository<String, Reservation> reservationRepository) {
         return new ExposureReservationService(reservationRepository);
     }
 }

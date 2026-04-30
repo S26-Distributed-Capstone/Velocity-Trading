@@ -1,3 +1,3 @@
 package edu.yu.marketmaker.model;
 
-public record ExposureState(int currentUsage, int totalCapacity, int activeReservations) {}
+public record ExposureState(int bidUsage, int askUsage, int totalCapacity, int activeReservations) {}

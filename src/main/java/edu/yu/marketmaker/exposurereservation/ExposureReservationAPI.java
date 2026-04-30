@@ -1,18 +1,18 @@
 package edu.yu.marketmaker.exposurereservation;
 
-import edu.yu.marketmaker.memory.Repository;
 import edu.yu.marketmaker.model.*;
 
 import edu.yu.marketmaker.service.ServiceHealth;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.handler.annotation.DestinationVariable;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.UUID;
 
 /**
  * REST Controller for the Exposure Reservation API.
- * Provides endpoints to reserve exposure capacity, managing fills, and releasing reservations.
+ * Provides endpoints to reserve exposure capacity, manage fills, and release reservations.
  */
 @RestController
 @Profile("exposure-reservation")
@@ -20,17 +20,16 @@ public class ExposureReservationAPI {
 
     private final ExposureReservationService service;
 
-    public ExposureReservationAPI(Repository<UUID, Reservation> repo) {
-        // In a real Spring app, use dependency injection (@Autowired)
-        this.service = new ExposureReservationService(repo);
+    public ExposureReservationAPI(ExposureReservationService service) {
+        this.service = service;
     }
 
     /**
      * POST /reservations
-     * Requests exposure capacity for a quote.
+     * Requests exposure capacity for a quote on both bid and ask sides.
      *
-     * @param quote The quote containing symbol and quantity.
-     * @return A ReservationResponse with the granted quantity and status (GRANTED, PARTIAL, DENIED).
+     * @param quote The quote containing symbol, bid quantity, and ask quantity.
+     * @return A ReservationResponse with granted quantities per side and status (GRANTED, PARTIAL, DENIED).
      */
     @PostMapping("/reservations")
     public ResponseEntity<ReservationResponse> createReservation(@RequestBody Quote quote) {
@@ -38,44 +37,81 @@ public class ExposureReservationAPI {
     }
 
     /**
-     * POST /reservations/{id}/apply-fill
+     * TCP/RSocket: request-response route {@code "reservations"}.
+     * Creates a reservation with the same behavior as POST /reservations.
+     */
+    @MessageMapping("reservations")
+    public ReservationResponse createReservationMessage(@Payload Quote quote) {
+        return service.createReservation(quote);
+    }
+
+    /**
+     * POST /reservations/{symbol}/apply-fill
      * Updates an existing reservation after a partial or full fill occurs.
-     * Reduces the reserved exposure by the filled amount.
+     * Reduces the reserved exposure on the appropriate side by the filled amount.
      *
-     * @param id The UUID of the reservation.
-     * @param requestedQuantity The filled quantity.
+     * @param symbol The symbol key of the reservation.
+     * @param fill The fill containing quantity and side (BUY or SELL).
      * @return A response indicating the capacity that was freed up by this fill.
      */
-    @PostMapping("/reservations/{id}/apply-fill")
-    public ResponseEntity<FreedCapacityResponse> applyFill(@PathVariable UUID id, @RequestBody int requestedQuantity) {
-        int freed = service.applyFill(id, requestedQuantity);
+    @PostMapping("/reservations/{symbol}/apply-fill")
+    public ResponseEntity<FreedCapacityResponse> applyFill(@PathVariable String symbol, @RequestBody Fill fill) {
+        int freed = service.applyFill(symbol, fill.quantity(), fill.side());
         return ResponseEntity.ok(new FreedCapacityResponse(freed));
     }
 
     /**
-     * POST /reservations/{id}/release
-     * Manually releases a reservation, typically used when a quote is replaced or canceled
-     * without being filled.
-     *
-     * @param id The UUID of the reservation to release.
-     * @return A response indicating the total remaining capacity that was freed.
+     * TCP/RSocket: request-response route {@code "reservations.{symbol}.apply-fill"}.
+     * Applies a fill with the same behavior as POST /reservations/{symbol}/apply-fill.
      */
-    @PostMapping("/reservations/{id}/release")
-    public ResponseEntity<FreedCapacityResponse> release(@PathVariable UUID id) {
-        int freed = service.release(id);
+    @MessageMapping("reservations.{symbol}.apply-fill")
+    public FreedCapacityResponse applyFillMessage(@DestinationVariable String symbol, @Payload Fill fill) {
+        int freed = service.applyFill(symbol, fill.quantity(), fill.side());
+        return new FreedCapacityResponse(freed);
+    }
+
+    /**
+     * POST /reservations/{symbol}/release
+     * Manually releases a reservation on both sides, typically used when a quote
+     * is replaced, canceled, or expires.
+     *
+     * @param symbol The symbol key of the reservation to release.
+     * @return A response indicating the total capacity that was freed.
+     */
+    @PostMapping("/reservations/{symbol}/release")
+    public ResponseEntity<FreedCapacityResponse> release(@PathVariable String symbol) {
+        int freed = service.release(symbol);
         return ResponseEntity.ok(new FreedCapacityResponse(freed));
+    }
+
+    /**
+     * TCP/RSocket: request-response route {@code "reservations.{symbol}.release"}.
+     * Releases a reservation with the same behavior as POST /reservations/{symbol}/release.
+     */
+    @MessageMapping("reservations.{symbol}.release")
+    public FreedCapacityResponse releaseMessage(@DestinationVariable String symbol) {
+        int freed = service.release(symbol);
+        return new FreedCapacityResponse(freed);
     }
 
     /**
      * GET /exposure
-     * Retrieves the current global exposure state.
-     * Useful for debugging and monitoring usage versus capacity.
+     * Retrieves the current global exposure state with bid and ask usage.
      *
-     * @return The current exposure state including usage, total capacity, and active reservation count.
+     * @return The current exposure state including bid/ask usage, total capacity, and active reservation count.
      */
     @GetMapping("/exposure")
     public ResponseEntity<ExposureState> getExposure() {
         return ResponseEntity.ok(service.getExposureState());
+    }
+
+    /**
+     * TCP/RSocket: request-response route {@code "exposure"}.
+     * Retrieves exposure with the same behavior as GET /exposure.
+     */
+    @MessageMapping("exposure")
+    public ExposureState getExposureMessage() {
+        return service.getExposureState();
     }
 
     /**
@@ -87,5 +123,14 @@ public class ExposureReservationAPI {
     @GetMapping("/health")
     public ResponseEntity<ServiceHealth> getHealth() {
         return ResponseEntity.ok(new ServiceHealth(true, 0, "Exposure Reservation Service"));
+    }
+
+    /**
+     * TCP/RSocket: request-response route {@code "health"}.
+     * Returns service health with the same behavior as GET /health.
+     */
+    @MessageMapping("health")
+    public ServiceHealth getHealthMessage() {
+        return new ServiceHealth(true, 0, "Exposure Reservation Service");
     }
 }

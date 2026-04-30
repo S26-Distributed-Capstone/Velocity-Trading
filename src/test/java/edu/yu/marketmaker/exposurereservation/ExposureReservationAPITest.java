@@ -42,7 +42,7 @@ class ExposureReservationAPITest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @MockitoBean
-    private Repository<UUID, Reservation> reservationRepository;
+    private Repository<String, Reservation> reservationRepository;
 
     @Test
     void healthEndpointReturnsOk() throws Exception {
@@ -57,71 +57,78 @@ class ExposureReservationAPITest {
     void createReservationReturnsGranted() throws Exception {
         when(reservationRepository.getAll()).thenReturn(Collections.emptyList());
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote();
 
         mockMvc.perform(post("/reservations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(quote)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("GRANTED"))
-                .andExpect(jsonPath("$.grantedQuantity").value(10))
+                .andExpect(jsonPath("$.grantedBidQuantity").value(10))
+                .andExpect(jsonPath("$.grantedAskQuantity").value(10))
                 .andExpect(jsonPath("$.id").isNotEmpty());
     }
 
     @Test
     void createReservationReturnsPartial() throws Exception {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 95, 95, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 95, 95, 95, 95, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote();
 
         mockMvc.perform(post("/reservations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(quote)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("PARTIAL"))
-                .andExpect(jsonPath("$.grantedQuantity").value(5));
+                .andExpect(jsonPath("$.grantedBidQuantity").value(5))
+                .andExpect(jsonPath("$.grantedAskQuantity").value(5));
     }
 
     @Test
     void createReservationReturnsDenied() throws Exception {
-        Reservation existing = new Reservation(UUID.randomUUID(), "GOOG", 100, 100, ReservationStatus.GRANTED);
+        Reservation existing = new Reservation("GOOG", "GOOG", 100, 100, 100, 100, ReservationStatus.GRANTED);
         when(reservationRepository.getAll()).thenReturn(List.of(existing));
 
-        Quote quote = makeQuote("AAPL", 10);
+        Quote quote = makeQuote();
 
         mockMvc.perform(post("/reservations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(quote)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("DENIED"))
-                .andExpect(jsonPath("$.grantedQuantity").value(0));
+                .andExpect(jsonPath("$.grantedBidQuantity").value(0))
+                .andExpect(jsonPath("$.grantedAskQuantity").value(0));
     }
 
     // POST /reservations/{id}/apply-fill
 
     @Test
     void applyFillReturnsFreedCapacity() throws Exception {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 40, 40, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 40, 40, 40, 40, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        mockMvc.perform(post("/reservations/" + id + "/apply-fill")
+        Fill fill = new Fill(UUID.randomUUID(), symbol, Side.BUY, 10, 100.0, UUID.randomUUID(), System.currentTimeMillis());
+
+        mockMvc.perform(post("/reservations/" + symbol + "/apply-fill")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("10"))
+                        .content(objectMapper.writeValueAsString(fill)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.freedCapacity").value(10));
     }
 
     @Test
     void applyFillFullConsumption() throws Exception {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 20, 20, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 20, 20, 20, 20, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        mockMvc.perform(post("/reservations/" + id + "/apply-fill")
+        Fill fill = new Fill(UUID.randomUUID(), symbol, Side.BUY, 20, 100.0, UUID.randomUUID(), System.currentTimeMillis());
+
+        mockMvc.perform(post("/reservations/" + symbol + "/apply-fill")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("20"))
+                        .content(objectMapper.writeValueAsString(fill)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.freedCapacity").value(20));
     }
@@ -130,25 +137,25 @@ class ExposureReservationAPITest {
 
     @Test
     void releaseReturnsFreedCapacity() throws Exception {
-        UUID id = UUID.randomUUID();
-        Reservation reservation = new Reservation(id, "AAPL", 30, 30, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+        String symbol = "AAPL";
+        Reservation reservation = new Reservation(symbol, symbol, 30, 30, 30, 30, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        mockMvc.perform(post("/reservations/" + id + "/release"))
+        mockMvc.perform(post("/reservations/" + symbol + "/release"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.freedCapacity").value(30));
+                .andExpect(jsonPath("$.freedCapacity").value(60));
     }
 
     @Test
     void releasePartiallyFilledReservation() throws Exception {
-        UUID id = UUID.randomUUID();
-        // Was 30, already filled 10, so granted=20
-        Reservation reservation = new Reservation(id, "AAPL", 30, 20, ReservationStatus.GRANTED);
-        when(reservationRepository.get(id)).thenReturn(Optional.of(reservation));
+        String symbol = "AAPL";
+        // Was 30/30, already filled 10 on each side, so remaining granted is 20/20.
+        Reservation reservation = new Reservation(symbol, symbol, 30, 20, 30, 20, ReservationStatus.GRANTED);
+        when(reservationRepository.get(symbol)).thenReturn(Optional.of(reservation));
 
-        mockMvc.perform(post("/reservations/" + id + "/release"))
+        mockMvc.perform(post("/reservations/" + symbol + "/release"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.freedCapacity").value(20));
+                .andExpect(jsonPath("$.freedCapacity").value(40));
     }
 
     // GET /exposure
@@ -156,14 +163,15 @@ class ExposureReservationAPITest {
     @Test
     void getExposureShowsUsageAndCapacity() throws Exception {
         List<Reservation> reservations = List.of(
-                new Reservation(UUID.randomUUID(), "AAPL", 20, 20, ReservationStatus.GRANTED),
-                new Reservation(UUID.randomUUID(), "GOOG", 30, 15, ReservationStatus.PARTIAL)
+                new Reservation("AAPL", "AAPL", 20, 20, 20, 20, ReservationStatus.GRANTED),
+                new Reservation("GOOG", "GOOG", 30, 15, 30, 15, ReservationStatus.PARTIAL)
         );
         when(reservationRepository.getAll()).thenReturn(reservations);
 
         mockMvc.perform(get("/exposure"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentUsage").value(35))
+                .andExpect(jsonPath("$.bidUsage").value(35))
+                .andExpect(jsonPath("$.askUsage").value(35))
                 .andExpect(jsonPath("$.totalCapacity").value(100))
                 .andExpect(jsonPath("$.activeReservations").value(2));
     }
@@ -174,7 +182,8 @@ class ExposureReservationAPITest {
 
         mockMvc.perform(get("/exposure"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentUsage").value(0))
+                .andExpect(jsonPath("$.bidUsage").value(0))
+                .andExpect(jsonPath("$.askUsage").value(0))
                 .andExpect(jsonPath("$.totalCapacity").value(100))
                 .andExpect(jsonPath("$.activeReservations").value(0));
     }
@@ -182,19 +191,20 @@ class ExposureReservationAPITest {
     @Test
     void getExposureExcludesReleasedReservations() throws Exception {
         List<Reservation> reservations = List.of(
-                new Reservation(UUID.randomUUID(), "AAPL", 50, 0, ReservationStatus.GRANTED),  // released
-                new Reservation(UUID.randomUUID(), "GOOG", 30, 30, ReservationStatus.GRANTED)  // active
+                new Reservation("AAPL", "AAPL", 50, 0, 50, 0, ReservationStatus.GRANTED),  // released
+                new Reservation("GOOG", "GOOG", 30, 30, 30, 30, ReservationStatus.GRANTED)  // active
         );
         when(reservationRepository.getAll()).thenReturn(reservations);
 
         mockMvc.perform(get("/exposure"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentUsage").value(30))
+                .andExpect(jsonPath("$.bidUsage").value(30))
+                .andExpect(jsonPath("$.askUsage").value(30))
                 .andExpect(jsonPath("$.activeReservations").value(1));
     }
 
-    private Quote makeQuote(String symbol, int askQty) {
-        return new Quote(symbol, 99.0, 10, 101.0, askQty, UUID.randomUUID(),
+    private Quote makeQuote() {
+        return new Quote("AAPL", 99.0, 10, 101.0, 10, UUID.randomUUID(),
                 System.currentTimeMillis() + 30_000);
     }
 }

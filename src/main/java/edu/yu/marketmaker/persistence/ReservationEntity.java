@@ -4,20 +4,20 @@ import edu.yu.marketmaker.model.Reservation;
 import edu.yu.marketmaker.model.ReservationStatus;
 import jakarta.persistence.*;
 
-import java.util.UUID;
-
 /**
  * JPA Entity for Reservation records used by Hazelcast MapStore.
  */
 @Entity
 @Table(name = "reservations")
-public class ReservationEntity implements IdentifiableEntity<UUID> {
+public class ReservationEntity implements IdentifiableEntity<String> {
 
     @Id
-    private UUID id;
+    private String id;
     private String symbol;
-    private int requested;
-    private int granted;
+    private int requestedBid;
+    private int grantedBid;
+    private int requestedAsk;
+    private int grantedAsk;
     @Enumerated(EnumType.STRING)
     private ReservationStatus status;
 
@@ -32,18 +32,21 @@ public class ReservationEntity implements IdentifiableEntity<UUID> {
     /**
      * All-args constructor.
      */
-    public ReservationEntity(UUID id, String symbol, int requested, int granted, ReservationStatus status) {
+    public ReservationEntity(String id, String symbol, int requestedBid, int grantedBid,
+                             int requestedAsk, int grantedAsk, ReservationStatus status) {
         this.id = id;
         this.symbol = symbol;
-        this.requested = requested;
-        this.granted = granted;
+        this.requestedBid = requestedBid;
+        this.grantedBid = grantedBid;
+        this.requestedAsk = requestedAsk;
+        this.grantedAsk = grantedAsk;
         this.status = status;
     }
 
     // --- IdentifiableEntity Implementation ---
 
     @Override
-    public UUID getId() {
+    public String getId() {
         return id;
     }
 
@@ -54,7 +57,10 @@ public class ReservationEntity implements IdentifiableEntity<UUID> {
      * @return A Reservation record.
      */
     public Reservation toRecord() {
-        return new Reservation(this.id, this.symbol, this.requested, this.granted, this.status);
+        return new Reservation(this.id, this.symbol,
+                this.requestedBid, this.grantedBid,
+                this.requestedAsk, this.grantedAsk,
+                this.status);
     }
 
     /**
@@ -66,15 +72,17 @@ public class ReservationEntity implements IdentifiableEntity<UUID> {
         return new ReservationEntity(
                 reservation.id(),
                 reservation.symbol(),
-                reservation.requested(),
-                reservation.granted(),
+                reservation.requestedBid(),
+                reservation.grantedBid(),
+                reservation.requestedAsk(),
+                reservation.grantedAsk(),
                 reservation.status()
         );
     }
 
     // --- Getters and Setters ---
 
-    public void setId(UUID id) {
+    public void setId(String id) {
         this.id = id;
     }
 
@@ -86,20 +94,36 @@ public class ReservationEntity implements IdentifiableEntity<UUID> {
         this.symbol = symbol;
     }
 
-    public int getRequested() {
-        return requested;
+    public int getRequestedBid() {
+        return requestedBid;
     }
 
-    public void setRequested(int requested) {
-        this.requested = requested;
+    public void setRequestedBid(int requestedBid) {
+        this.requestedBid = requestedBid;
     }
 
-    public int getGranted() {
-        return granted;
+    public int getGrantedBid() {
+        return grantedBid;
     }
 
-    public void setGranted(int granted) {
-        this.granted = granted;
+    public void setGrantedBid(int grantedBid) {
+        this.grantedBid = grantedBid;
+    }
+
+    public int getRequestedAsk() {
+        return requestedAsk;
+    }
+
+    public void setRequestedAsk(int requestedAsk) {
+        this.requestedAsk = requestedAsk;
+    }
+
+    public int getGrantedAsk() {
+        return grantedAsk;
+    }
+
+    public void setGrantedAsk(int grantedAsk) {
+        this.grantedAsk = grantedAsk;
     }
 
     public ReservationStatus getStatus() {
@@ -115,10 +139,11 @@ public class ReservationEntity implements IdentifiableEntity<UUID> {
         return "ReservationEntity{" +
                 "id=" + id +
                 ", symbol='" + symbol + '\'' +
-                ", requested=" + requested +
-                ", granted=" + granted +
+                ", requestedBid=" + requestedBid +
+                ", grantedBid=" + grantedBid +
+                ", requestedAsk=" + requestedAsk +
+                ", grantedAsk=" + grantedAsk +
                 ", status=" + status +
                 '}';
     }
 }
-

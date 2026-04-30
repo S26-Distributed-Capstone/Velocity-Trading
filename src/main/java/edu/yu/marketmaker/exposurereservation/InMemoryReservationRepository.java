@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Profile;
 
 @Profile("testing")
 public class InMemoryReservationRepository implements ReservationRepository {
-    private final Map<UUID, Reservation> store = new ConcurrentHashMap<>();
+    private final Map<String, Reservation> store = new ConcurrentHashMap<>();
 
     @Override
     public void save(Reservation reservation) {
@@ -16,7 +16,7 @@ public class InMemoryReservationRepository implements ReservationRepository {
     }
 
     @Override
-    public Optional<Reservation> findById(UUID id) {
+    public Optional<Reservation> findById(String id) {
         return Optional.ofNullable(store.get(id));
     }
 

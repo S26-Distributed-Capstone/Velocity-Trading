@@ -1,58 +1,55 @@
 package edu.yu.marketmaker.marketmaker;
 
-import java.util.HashSet;
-import java.util.Set;
-
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import edu.yu.marketmaker.model.Position;
-import edu.yu.marketmaker.model.Quote;
 import edu.yu.marketmaker.model.StateSnapshot;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @Profile("market-maker-node")
 public class MarketMaker implements ApplicationRunner {
 
-    private final PositionTracker positionTracker;
+    private final SnapshotTracker positionTracker;
     private final QuoteGenerator quoteGenerator;
-    private final Set<String> handledSymbols;
+    private final Map<String, Long> lastProcessedVersionBySymbol = new ConcurrentHashMap<>();
 
-    public MarketMaker(PositionTracker positionTracker, QuoteGenerator quoteGenerator) {
+    public MarketMaker(SnapshotTracker positionTracker, QuoteGenerator quoteGenerator) {
         this.positionTracker = positionTracker;
         this.quoteGenerator = quoteGenerator;
-        this.handledSymbols = new HashSet<>();
     }
 
     private void handlePosition(StateSnapshot snapshot) {
-        if (!handlesSymbol(snapshot.position().symbol()) || !newVersion(snapshot.position())) {
+        if (snapshot == null || snapshot.position() == null || snapshot.position().symbol() == null) {
             return;
         }
-        Quote quote = quoteGenerator.generateQuote(snapshot.position(), snapshot.fill());
-        // TODO: update reservations
-        // TODO: send new quote to exchange
-    }
-
-    private boolean handlesSymbol(String symbol) {
-        return handledSymbols.contains(symbol);
+        if (!positionTracker.handlesSymbol(snapshot.position().symbol()) || !newVersion(snapshot.position())) {
+            return;
+        }
+        quoteGenerator.generateQuote(snapshot.position(), snapshot.fill());
     }
 
     private boolean newVersion(Position position) {
-        return false;
+        Long previous = lastProcessedVersionBySymbol.put(position.symbol(), position.version());
+        return previous == null || position.version() > previous;
     }
 
     public boolean addSymbol(String symbol) {
-        return handledSymbols.add(symbol);
+        return positionTracker.addSymbol(symbol);
     }
 
     public boolean removeSymbol(String symbol) {
-        return handledSymbols.remove(symbol);
+        return positionTracker.removeSymbol(symbol);
     }
 
     @Override
-    public void run(ApplicationArguments args) throws Exception {
-        positionTracker.getPositions().doOnNext(this::handlePosition);
+    public void run(ApplicationArguments args) {
+        // Subscribe once at startup so incoming snapshots are continuously processed.
+        positionTracker.getPositions().subscribe(this::handlePosition);
     }
 }

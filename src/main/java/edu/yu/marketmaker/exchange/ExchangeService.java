@@ -2,6 +2,8 @@ package edu.yu.marketmaker.exchange;
 
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,11 +27,13 @@ public class ExchangeService {
     private Repository<String, Quote> quoteRepository;
     private OrderDispatcher orderDispatcher;
     private ReservationRequester reservationRequester;
+    private final Logger logger;
 
     public ExchangeService(ReservationRequester reservationRequester, Repository<String, Quote> quoteRepository, OrderDispatcher orderDispatcher) {
         this.quoteRepository = quoteRepository;
         this.orderDispatcher = orderDispatcher;
         this.reservationRequester = reservationRequester;
+        this.logger = LoggerFactory.getLogger(ExchangeService.class);
     }
     
     /**
@@ -55,7 +59,9 @@ public class ExchangeService {
      */
     @PutMapping("/quotes/{symbol}")
     void putQuote(@PathVariable String symbol, @RequestBody Quote quote) {
-        if (quoteRepository.get(symbol) == null) { // this is used for bootstrapping the quotes
+        logger.info("Putting new version of quote for: {}, {}", symbol, quoteRepository.get(symbol).isPresent());
+        if (quoteRepository.get(symbol).isEmpty()) { // this is used for bootstrapping the quotes
+            logger.info("Bootstrapping quote for: {}", quote.symbol());
             reservationRequester.sendReservation(quote);
         }
         quoteRepository.put(quote);

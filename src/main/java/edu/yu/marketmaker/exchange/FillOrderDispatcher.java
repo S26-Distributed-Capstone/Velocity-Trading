@@ -2,13 +2,19 @@ package edu.yu.marketmaker.exchange;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.rsocket.RSocketRequester;
 import org.springframework.stereotype.Component;
 
 import edu.yu.marketmaker.memory.Repository;
 import edu.yu.marketmaker.model.ExternalOrder;
 import edu.yu.marketmaker.model.Fill;
+import edu.yu.marketmaker.model.FreedCapacityResponse;
 import edu.yu.marketmaker.model.Quote;
 import edu.yu.marketmaker.model.Side;
+
+import java.util.UUID;
 
 @Component
 public class FillOrderDispatcher implements OrderDispatcher {
@@ -17,10 +23,25 @@ public class FillOrderDispatcher implements OrderDispatcher {
 
     private final Repository<String, Quote> quoteRepository;
     private final FillSender fillSender;
+    private final RSocketRequester reservationRequester;
 
+    // Backward-compatible constructor used by isolated unit tests.
     public FillOrderDispatcher(Repository<String, Quote> repository, FillSender fillSender) {
         this.quoteRepository = repository;
         this.fillSender = fillSender;
+        this.reservationRequester = null;
+    }
+
+    @Autowired
+    public FillOrderDispatcher(
+            Repository<String, Quote> repository,
+            FillSender fillSender,
+            RSocketRequester.Builder rsocketRequesterBuilder,
+            @Value("${marketmaker.exposure-reservation.host:exposure-reservation}") String reservationHost,
+            @Value("${marketmaker.exposure-reservation.port:7000}") int reservationPort) {
+        this.quoteRepository = repository;
+        this.fillSender = fillSender;
+        this.reservationRequester = rsocketRequesterBuilder.tcp(reservationHost, reservationPort);
     }
 
     @Override
@@ -48,29 +69,59 @@ public class FillOrderDispatcher implements OrderDispatcher {
                     price = quote.bidPrice();
                 }
         }
-        int adjustedQuantity = adjustQuantity(quote, order);
+        int adjustedQuantity = executableQuantity(quote, order);
         if (adjustedQuantity == 0) {
             throw new OrderValidationException("Order could not be filled");
         }
-        Fill fill = new Fill(order.id(), order.symbol(), order.side(), adjustedQuantity, price, quote.quoteId(), timestamp);
+
+        Side marketMakerSide = order.side() == Side.BUY ? Side.SELL : Side.BUY;
+
+        releaseReservedExposure(order.symbol(), marketMakerSide, adjustedQuantity);
+        applyQuoteFill(quote, order.side(), adjustedQuantity);
+
+        Fill fill = new Fill(order.id(), order.symbol(), marketMakerSide, adjustedQuantity, price, quote.quoteId(), timestamp);
         fillSender.sendFill(fill);
     }
 
-    private int adjustQuantity(Quote quote, ExternalOrder order) {
-        int adjustedQuantity = Math.min(order.side() == Side.BUY ? quote.askQuantity() : quote.bidQuantity(), order.quantity());
-        quoteRepository.put(updateQuote(quote, order.side(), adjustedQuantity));
-        return adjustedQuantity;
+    private int executableQuantity(Quote quote, ExternalOrder order) {
+        return Math.min(order.side() == Side.BUY ? quote.askQuantity() : quote.bidQuantity(), order.quantity());
+    }
+
+    private void applyQuoteFill(Quote quote, Side side, int amount) {
+        quoteRepository.put(updateQuote(quote, side, amount));
     }
 
     private Quote updateQuote(Quote quote, Side side, int amount) {
         return new Quote(
-                quote.symbol(),
-                quote.bidPrice(),
-                side == Side.SELL ? quote.bidQuantity() - amount : quote.bidQuantity(),
-                quote.askPrice(),
-                side == Side.BUY ? quote.askQuantity() - amount : quote.askQuantity(),
-                quote.quoteId(),
-                quote.expiresAt()
+            quote.symbol(),
+            quote.bidPrice(),
+            side == Side.SELL ? quote.bidQuantity() - amount : quote.bidQuantity(),
+            quote.askPrice(),
+            side == Side.BUY ? quote.askQuantity() - amount : quote.askQuantity(),
+            quote.quoteId(),
+            quote.expiresAt() 
         );
     }
+
+    private void releaseReservedExposure(String symbol, Side side, int quantity) {
+        if (reservationRequester == null) {
+            logger.debug("Skipping reservation release in test mode: symbol={}, side={}, qty={}", symbol, side, quantity);
+            return;
+        }
+
+        Fill fillForReservation = new Fill(UUID.randomUUID(), symbol, side, quantity, 0.0, null, System.currentTimeMillis());
+        FreedCapacityResponse response = reservationRequester
+                .route("reservations." + symbol + ".apply-fill")
+                .data(fillForReservation)
+                .retrieveMono(FreedCapacityResponse.class)
+                .block();
+
+        if (response == null) {
+            throw new OrderValidationException("Exposure reservation apply-fill returned no response for " + symbol);
+        }
+
+        logger.info("Released reserved exposure: symbol={}, side={}, qty={}, freed={}",
+                symbol, side, quantity, response.freedCapacity());
+    }
+    
 }

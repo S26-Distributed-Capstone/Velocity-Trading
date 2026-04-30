@@ -1,4 +1,5 @@
 *.class
+*.claude
 build/
 target/
 .idea/
