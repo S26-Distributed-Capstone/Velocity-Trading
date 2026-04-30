@@ -4,7 +4,6 @@ import edu.yu.marketmaker.ha.LeaderAwareRSocketClient;
 import edu.yu.marketmaker.model.Fill;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 /**
@@ -12,7 +11,6 @@ import org.springframework.stereotype.Component;
  * via Zookeeper on every call. Handles failover transparently.
  */
 @Component
-@Profile("exchange")
 public class RSocketFillSender implements FillSender {
 
     private static final Logger logger = LoggerFactory.getLogger(RSocketFillSender.class);
