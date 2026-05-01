@@ -1,11 +1,11 @@
 services:
-  app:
+  trading-state:
     build: .
     environment:
       - SPRING_PROFILES_ACTIVE=trading-state
     image: market-maker
     ports:
-      - "8080:8080"
+      - "18080:8080"
       - "7000:7000"
     depends_on:
       postgres:
@@ -24,3 +24,198 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  zookeeper1:
+    image: zookeeper:3.9
+    hostname: zookeeper1
+    environment:
+      - ZOO_MY_ID=1
+      - ZOO_SERVERS=server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+      - ZOO_4LW_COMMANDS_WHITELIST=srvr,ruok,mntr,stat,conf
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  zookeeper2:
+    image: zookeeper:3.9
+    hostname: zookeeper2
+    environment:
+      - ZOO_MY_ID=2
+      - ZOO_SERVERS=server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+      - ZOO_4LW_COMMANDS_WHITELIST=srvr,ruok,mntr,stat,conf
+    ports:
+      - "2182:2181"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  zookeeper3:
+    image: zookeeper:3.9
+    hostname: zookeeper3
+    environment:
+      - ZOO_MY_ID=3
+      - ZOO_SERVERS=server.1=zookeeper1:2888:3888;2181 server.2=zookeeper2:2888:3888;2181 server.3=zookeeper3:2888:3888;2181
+      - ZOO_4LW_COMMANDS_WHITELIST=srvr,ruok,mntr,stat,conf
+    ports:
+      - "2183:2181"
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  market-maker-node-1:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-1
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  market-maker-node-2:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-2
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  market-maker-node-3:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-3
+    ports:
+      - "8083:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  market-maker-node-4:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-4
+    ports:
+      - "8084:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  market-maker-node-5:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-5
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  market-maker-node-6:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-6
+    ports:
+      - "8086:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  market-maker-node-7:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=market-maker-node,test-quote-generator
+      - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - CLUSTER_ADVERTISE_HOST=market-maker-node-7
+    ports:
+      - "8087:8080"
+    volumes:
+      - ./config/symbols.txt:/config/symbols.txt:ro
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy

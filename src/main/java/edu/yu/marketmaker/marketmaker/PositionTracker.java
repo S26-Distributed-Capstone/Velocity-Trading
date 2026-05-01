@@ -42,6 +42,11 @@ public class PositionTracker implements SnapshotTracker {
         return trackedSymbols.contains(symbol);
     }
 
+    @Override
+    public Set<String> handledSymbols() {
+        return Set.copyOf(trackedSymbols);
+    }
+
     public Flux<StateSnapshot> getPositions() {
         // Only forward snapshots for symbols we're tracking. Guard against nulls in the stream.
         return requester

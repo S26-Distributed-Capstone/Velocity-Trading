@@ -1,0 +1,10 @@
+# Seed symbol list for the market-maker cluster.
+# One ticker per line. Blank lines and lines starting with '#' are ignored.
+# Edited at startup only — runtime changes go through POST/DELETE /cluster/symbols on the leader.
+AAPL
+MSFT
+GOOG
+TSLA
+NVDA
+AMZN
+META

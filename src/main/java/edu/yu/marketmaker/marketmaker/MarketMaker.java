@@ -8,8 +8,11 @@ import org.springframework.stereotype.Component;
 import edu.yu.marketmaker.model.Position;
 import edu.yu.marketmaker.model.StateSnapshot;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Component
 @Profile("market-maker-node")
@@ -18,6 +21,7 @@ public class MarketMaker implements ApplicationRunner {
     private final SnapshotTracker positionTracker;
     private final QuoteGenerator quoteGenerator;
     private final Map<String, Long> lastProcessedVersionBySymbol = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> forwardedCountBySymbol = new ConcurrentHashMap<>();
 
     public MarketMaker(SnapshotTracker positionTracker, QuoteGenerator quoteGenerator) {
         this.positionTracker = positionTracker;
@@ -35,8 +39,48 @@ public class MarketMaker implements ApplicationRunner {
     }
 
     private boolean newVersion(Position position) {
-        Long previous = lastProcessedVersionBySymbol.put(position.symbol(), position.version());
-        return previous == null || position.version() > previous;
+        long incoming = position.version();
+        boolean[] isNew = {false};
+        lastProcessedVersionBySymbol.compute(position.symbol(), (k, prev) -> {
+            if (prev == null || incoming > prev) {
+                isNew[0] = true;
+                return incoming;
+            }
+            return prev;
+        });
+        return isNew[0];
+    }
+
+    /**
+     * Entry point for leader-forwarded snapshots arriving over TCP from the
+     * cluster leader. Increments the per-symbol forward counter (used by
+     * {@link MarketMakerStatusController} to prove routing in tests) and then
+     * runs the same processing path as locally-observed snapshots.
+     */
+    public void handleForwardedSnapshot(StateSnapshot snapshot) {
+        if (snapshot == null || snapshot.position() == null || snapshot.position().symbol() == null) {
+            return;
+        }
+        forwardedCountBySymbol
+                .computeIfAbsent(snapshot.position().symbol(), k -> new AtomicLong())
+                .incrementAndGet();
+        handlePosition(snapshot);
+    }
+
+    /**
+     * @return snapshot of the per-symbol count of forwarded frames this node
+     *         has received from the leader. Symbols never forwarded aren't
+     *         present. Used for cluster-routing assertions in tests.
+     */
+    public Map<String, Long> forwardedCounts() {
+        Map<String, Long> out = new LinkedHashMap<>();
+        forwardedCountBySymbol.forEach((k, v) -> out.put(k, v.get()));
+        return out;
+    }
+
+    /** @return the symbols currently assigned to this node by the coordinator. */
+    public Set<String> assignedSymbols() {
+        return positionTracker.handledSymbols();
     }
 
     public boolean addSymbol(String symbol) {
@@ -44,7 +88,11 @@ public class MarketMaker implements ApplicationRunner {
     }
 
     public boolean removeSymbol(String symbol) {
-        return positionTracker.removeSymbol(symbol);
+        boolean removed = positionTracker.removeSymbol(symbol);
+        if (removed) {
+            lastProcessedVersionBySymbol.remove(symbol);
+        }
+        return removed;
     }
 
     @Override
