@@ -12,3 +12,4 @@ resources:
   - exchange.yaml
   - external-publisher.yaml
   - market-maker.yaml
+  - headlamp.yaml
