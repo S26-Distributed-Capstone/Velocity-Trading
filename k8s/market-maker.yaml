@@ -7,6 +7,10 @@ metadata:
   namespace: market-maker
 spec:
   clusterIP: None
+  # Peers resolve mm-N.mm-hs for Hazelcast and leader->worker forward
+  # connections during bootstrap, before any pod is Ready. Without this,
+  # DNS would never publish and the cluster could never form.
+  publishNotReadyAddresses: true
   selector:
     app: mm
   ports:
@@ -152,11 +156,11 @@ spec:
               mountPath: /config
               readOnly: true
           readinessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
             initialDelaySeconds: 25
             periodSeconds: 5
           livenessProbe:
-            httpGet: { path: /health, port: 8080 }
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
             initialDelaySeconds: 90
             periodSeconds: 10
       volumes:
