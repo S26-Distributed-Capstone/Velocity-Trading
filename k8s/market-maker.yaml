@@ -170,8 +170,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: SPRING_PROFILES_ACTIVE
-              # Override to production-quote-generator for the end-to-end test.
-              value: "market-maker-node,test-quote-generator"
+              value: "market-maker-node,production-quote-generator"
             - name: ZOOKEEPER_CONNECT
               value: "zk-0.zk-hs:2181,zk-1.zk-hs:2181,zk-2.zk-hs:2181"
             # Pod-stable DNS used by peers to open the leader->worker forward.
