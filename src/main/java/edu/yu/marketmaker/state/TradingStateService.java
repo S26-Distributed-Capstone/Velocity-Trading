@@ -196,6 +196,15 @@ public class TradingStateService {
     }
 
     /**
+     * HTTP: get every recorded fill. Used by the end-to-end test to audit
+     * fill prices, sides, and quantities against the quotes that produced them.
+     */
+    @GetMapping("/state/fills")
+    Collection<Fill> getAllFills() {
+        return fillRepository.getAll();
+    }
+
+    /**
      * Get health of the trading state service.
      * @return
      */

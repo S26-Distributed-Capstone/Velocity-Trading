@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: symbols
+  namespace: market-maker
+data:
+  symbols.txt: |
+    AAPL
+    MSFT
+    GOOG
+    AMZN
+    TSLA
+    NVDA
+    META

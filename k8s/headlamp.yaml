@@ -1,0 +1,82 @@
+# Headlamp: web UI for the cluster.
+#
+# Deploys into the market-maker namespace (the kustomization.yaml at the root
+# of k8s/ rewrites everything to this namespace). The ClusterRoleBinding still
+# grants cluster-wide read/write through the ServiceAccount, so the UI sees
+# all namespaces, not just market-maker.
+#
+# Access from your laptop after `kubectl apply -k`:
+#   1) Browse to http://<any-node-ip>:30090
+#   2) On the login screen, paste the token printed by:
+#      doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n market-maker create token headlamp
+#
+# The image must be present in containerd on whichever node Headlamp lands on
+# — see docs/installation.md for the bundle list.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: headlamp
+  namespace: market-maker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headlamp-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: headlamp
+    namespace: market-maker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: headlamp
+  namespace: market-maker
+spec:
+  type: NodePort
+  selector:
+    app: headlamp
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4466
+      nodePort: 30090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headlamp
+  namespace: market-maker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: headlamp
+  template:
+    metadata:
+      labels:
+        app: headlamp
+    spec:
+      serviceAccountName: headlamp
+      containers:
+        - name: headlamp
+          image: ghcr.io/headlamp-k8s/headlamp:v0.39.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-in-cluster"
+            - "-plugins-dir=/build/plugins"
+          ports:
+            - containerPort: 4466
+          livenessProbe:
+            httpGet: { path: /, port: 4466 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /, port: 4466 }
+            initialDelaySeconds: 5
+            periodSeconds: 10

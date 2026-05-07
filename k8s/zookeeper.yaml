@@ -1,0 +1,104 @@
+# Headless service for stable per-pod DNS (zk-0.zk-hs, zk-1.zk-hs, zk-2.zk-hs)
+# used by ZK peers for quorum traffic (2888/3888).
+apiVersion: v1
+kind: Service
+metadata:
+  name: zk-hs
+  namespace: market-maker
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: zk
+  ports:
+    - name: client
+      port: 2181
+    - name: peer
+      port: 2888
+    - name: leader
+      port: 3888
+---
+# Client-facing ClusterIP service used by market-maker pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: zk
+  namespace: market-maker
+spec:
+  selector:
+    app: zk
+  ports:
+    - name: client
+      port: 2181
+      targetPort: 2181
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zk
+  namespace: market-maker
+spec:
+  serviceName: zk-hs
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: zk
+  template:
+    metadata:
+      labels:
+        app: zk
+    spec:
+      # --- ADDED AFFINITY BLOCK START ---
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+      # --- ADDED AFFINITY BLOCK END ---
+      containers:
+        - name: zookeeper
+          image: zookeeper:3.9
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: client, containerPort: 2181 }
+            - { name: peer,   containerPort: 2888 }
+            - { name: leader, containerPort: 3888 }
+          env:
+            - name: ZOO_SERVERS
+              value: "server.1=zk-0.zk-hs:2888:3888;2181 server.2=zk-1.zk-hs:2888:3888;2181 server.3=zk-2.zk-hs:2888:3888;2181"
+            - name: ZOO_4LW_COMMANDS_WHITELIST
+              value: "srvr,ruok,mntr,stat,conf"
+          command:
+            - sh
+            - -c
+            - |
+              export ZOO_MY_ID=$((${HOSTNAME##*-}+1))
+              exec /docker-entrypoint.sh zkServer.sh start-foreground
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          # Without persistent storage, every pod restart wipes all znodes
+          # (zxid resets to 0x0). That cascades into total cluster-state
+          # loss — leader latch, members, assignments, the symbol list.
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 1Gi

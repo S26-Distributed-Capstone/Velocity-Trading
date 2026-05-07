@@ -1,5 +1,7 @@
 package edu.yu.marketmaker.marketmaker;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
@@ -17,6 +19,8 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 @Profile("market-maker-node")
 public class MarketMaker implements ApplicationRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(MarketMaker.class);
 
     private final SnapshotTracker positionTracker;
     private final QuoteGenerator quoteGenerator;
@@ -98,6 +102,22 @@ public class MarketMaker implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         // Subscribe once at startup so incoming snapshots are continuously processed.
-        positionTracker.getPositions().subscribe(this::handlePosition);
+        // Per-snapshot try/catch so a single failed handlePosition (e.g. a
+        // transient reservation timeout) doesn't cancel the whole subscription
+        // — Reactor's LambdaSubscriber turns a thrown onNext into a terminal
+        // onError, and we need to keep processing subsequent snapshots.
+        // PositionTracker.getPositions() also retries forever on upstream
+        // errors, so a terminal onError reaching here is unexpected.
+        positionTracker.getPositions().subscribe(
+                snapshot -> {
+                    try {
+                        handlePosition(snapshot);
+                    } catch (Exception e) {
+                        String sym = (snapshot != null && snapshot.position() != null)
+                                ? snapshot.position().symbol() : "?";
+                        log.warn("error processing snapshot for {}: {}", sym, e.toString());
+                    }
+                },
+                err -> log.error("position subscription terminated", err));
     }
 }

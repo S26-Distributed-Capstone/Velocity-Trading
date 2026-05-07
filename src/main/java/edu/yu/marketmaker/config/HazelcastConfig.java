@@ -149,17 +149,30 @@ public class HazelcastConfig {
     }
 
     /**
-     * Network configuration for Hazelcast Nodes
+     * Network configuration for Hazelcast Nodes.
+     * Defaults to TCP-IP discovery so services across a docker-compose network
+     * can form one Hazelcast cluster (bridge networks don't forward multicast).
+     * The peer list is taken from {@code HAZELCAST_MEMBERS} (comma-separated
+     * host[:port] entries); when unset, the node starts as a cluster of one.
      * @param config config object to be used for parameters of Hazelcast
      */
     private void configureNetwork(Config config) {
         NetworkConfig networkConfig = config.getNetworkConfig();
+        networkConfig.setPort(5701);
+        networkConfig.setPortAutoIncrement(false);
 
-        // Join configuration - using multicast for development
-        // For production, consider TCP-IP or Kubernetes discovery
         JoinConfig joinConfig = networkConfig.getJoin();
-        joinConfig.getMulticastConfig().setEnabled(true);
-        joinConfig.getTcpIpConfig().setEnabled(false);
+        joinConfig.getMulticastConfig().setEnabled(false);
+        com.hazelcast.config.TcpIpConfig tcpIp = joinConfig.getTcpIpConfig();
+        tcpIp.setEnabled(true);
+
+        String members = System.getenv("HAZELCAST_MEMBERS");
+        if (members != null && !members.isBlank()) {
+            for (String m : members.split(",")) {
+                String trimmed = m.trim();
+                if (!trimmed.isEmpty()) tcpIp.addMember(trimmed);
+            }
+        }
     }
 
     // --- IMap Beans for Dependency Injection ---
