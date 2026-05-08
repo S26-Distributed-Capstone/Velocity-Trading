@@ -8,7 +8,7 @@ public class OrderPublisherRunner {
         try {
             ExternalOrderPublisher publisher = new ExternalOrderPublisher("http://localhost:8080");
             Runtime.getRuntime().addShutdownHook(
-                new Thread(() -> {publisher.stop();})
+                new Thread(publisher::stop)
             );
             if (shouldInitialize(args)) {
                 publisher.sendInitialQuotes();

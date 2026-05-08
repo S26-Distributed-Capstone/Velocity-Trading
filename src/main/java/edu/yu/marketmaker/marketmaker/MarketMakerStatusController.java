@@ -13,7 +13,7 @@ import java.util.Set;
  * {@code cluster.SymbolAdminController} (which is about cluster membership/
  * leadership) so "what am I, the market-maker, currently doing" lives in the
  * market-maker package.
- *
+ * <p>
  * {@code GET /marketmaker/status} returns this node's forwarded-snapshot
  * counts per symbol. Used by the cluster integration test to verify that the
  * leader is routing each symbol's updates to the one assigned worker.

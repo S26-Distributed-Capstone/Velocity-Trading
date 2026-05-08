@@ -100,7 +100,7 @@ Run
 ssh sack@192.168.8.11 "mkdir -p /home/sack/marketmaker"
 scp -r ./k8s sack@192.168.8.11:/home/sack/marketmaker/k8s
 ```
-2) Apply via Kustomize:
+1) Apply via Kustomize:
 ```powershell
 ssh sack@192.168.8.11 "doas env KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl apply -k /home/sack/marketmaker/k8s/"```
 
@@ -273,7 +273,7 @@ Execute `ClusterIntegrationWithSystemK8sTest.java`.
 Plaintext
 `-Dzk.hosts=192.168.8.11:2181,192.168.8.12:2181,192.168.8.13:2181`
 
-3) Run: The test will interface with the cluster, injecting orders and validating distributed state across the 14 nodes.
+1) Run: The test will interface with the cluster, injecting orders and validating distributed state across the 14 nodes.
 
 ---
 

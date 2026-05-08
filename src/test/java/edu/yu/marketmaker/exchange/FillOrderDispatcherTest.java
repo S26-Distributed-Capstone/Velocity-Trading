@@ -14,7 +14,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Tests for FillOrderDispatcher
- *
+ * <p>
  * From requirements.md and components.md:
  *   - External BUY → executes against the market maker's ASK (buyer buys FROM MM)
  *   - External SELL → executes against the market maker's BID (seller sells TO MM)

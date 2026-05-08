@@ -6,6 +6,7 @@ import edu.yu.marketmaker.marketmaker.MarketMaker;
 import jakarta.annotation.PreDestroy;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.CuratorCache;
+import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -17,12 +18,12 @@ import java.util.*;
 
 /**
  * Worker-side glue between ZK and the local {@link MarketMaker}.
- *
+ * <p>
  * Each JVM watches its own assignment znode at
  * {@code /marketmaker/assignments/<node-id>} and translates every change
  * into add/remove calls on the local {@link MarketMaker}. Tracks accepted
  * symbols so updates compute a precise diff (no spurious add/remove pairs).
- *
+ * <p>
  * On the leader, the znode is set to an empty list, so this component
  * naturally drains the local market-maker — no "I'm the leader" branch
  * needed in MarketMaker itself.
@@ -60,7 +61,7 @@ public class AssignmentListener implements ApplicationRunner {
      * listener).
      */
     @Override
-    public void run(ApplicationArguments args) {
+    public void run(@NonNull ApplicationArguments args) {
         String myPath = paths.assignmentFor(clusterNode.getNodeId());
         this.cache = CuratorCache.build(curator, myPath);
         this.cache.listenable().addListener((type, oldData, data) -> {
@@ -91,7 +92,7 @@ public class AssignmentListener implements ApplicationRunner {
      * symbol no longer assigned, add any newly assigned. Both defer to the
      * {@link MarketMaker} API so this class never touches market-making
      * state directly.
-     *
+     * <p>
      * Synchronized so overlapping ZK callbacks can't interleave their diffs.
      */
     private synchronized void applyDesired(List<String> desiredList) {

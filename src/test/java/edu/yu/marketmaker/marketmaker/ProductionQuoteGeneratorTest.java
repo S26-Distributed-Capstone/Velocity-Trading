@@ -12,12 +12,11 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
  * Tests for ProductionQuoteGenerator
- *
+ * <p>
  * From components.md:
  *   - Generates bid/ask quotes using inventory-aware pricing
  *   - Skews price and quantity based on the last fill side
@@ -28,7 +27,6 @@ import static org.mockito.Mockito.*;
 class ProductionQuoteGeneratorTest {
 
     private Repository<String, Quote> quoteRepository;
-    private RSocketRequester reservationRequester;
     private RSocketRequester.RequestSpec requestSpec;
     private ProductionQuoteGenerator generator;
 
@@ -40,7 +38,7 @@ class ProductionQuoteGeneratorTest {
     @BeforeEach
     void setUp() {
         quoteRepository = mock(Repository.class);
-        reservationRequester = mock(RSocketRequester.class);
+        RSocketRequester reservationRequester = mock(RSocketRequester.class);
         requestSpec = mock(RSocketRequester.RequestSpec.class);
 
         RSocketRequester.Builder builder = mock(RSocketRequester.Builder.class);

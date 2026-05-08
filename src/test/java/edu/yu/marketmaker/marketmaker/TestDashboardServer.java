@@ -78,7 +78,7 @@ public final class TestDashboardServer {
                 this.activeReservations));
 
         if (events.size() > MAX_EVENTS) {
-            events.remove(0);
+            events.removeFirst();
         }
     }
 

@@ -26,10 +26,10 @@ public class StaticQuoteRepository implements Repository<String, Quote> {
     private static Map<String, Quote> generateQuotes(Random random) {
         String[] symbols = new String[]{"AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "ABC", "DEF", "XYZ"};
         Map<String, Quote> quotes = new ConcurrentHashMap<>();
-        for (int i = 0; i < symbols.length; i++) {
-            quotes.put(symbols[i], new Quote(symbols[i],
-                random.nextInt(100), random.nextInt(100), random.nextInt(100), random.nextInt(100),
-                UUID.randomUUID(), random.nextInt(1000)
+        for (String symbol : symbols) {
+            quotes.put(symbol, new Quote(symbol,
+                    random.nextInt(100), random.nextInt(100), random.nextInt(100), random.nextInt(100),
+                    UUID.randomUUID(), random.nextInt(1000)
             ));
         }
         return quotes;

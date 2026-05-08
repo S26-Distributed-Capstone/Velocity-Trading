@@ -14,14 +14,13 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.util.Optional;
 import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
  * HTTP-layer tests for ExchangeService.
- *
+ * <p>
  * Verifies:
  *   - GET  /health returns service info
  *   - GET  /quotes/{symbol} returns quote or 404

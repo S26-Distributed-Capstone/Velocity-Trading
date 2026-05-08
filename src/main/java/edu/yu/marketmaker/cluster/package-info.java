@@ -1,12 +1,12 @@
 /**
  * ZooKeeper-backed clustering for the Market Maker application.
- *
+ * <p>
  * Handles node membership, leader election, and symbol-to-node assignment across
  * a fleet of market-maker JVMs. Each ticker is sharded to exactly one node; this
  * package is responsible for deciding which node owns which symbol, publishing
  * those assignments via ZooKeeper, and forwarding requests to the owning node
  * when a client hits the wrong one.
- *
+ * <p>
  * Key responsibilities:
  * <ul>
  *   <li>Node identity and liveness via ephemeral znodes (see {@link edu.yu.marketmaker.cluster.ClusterNode}).</li>

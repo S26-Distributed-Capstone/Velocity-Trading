@@ -32,16 +32,14 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * End-to-end cluster test: builds the compose stack (3-node ZK ensemble + 7
  * market-maker nodes + postgres), waits for convergence, kills the elected
  * leader, and verifies that a new leader is elected and the dead node is
  * evicted from the members set.
- *
+ * <p> <p>
  * Opt-in: requires {@code -Dcluster.it=true} on the mvn command line and
  * docker running locally.
  */
@@ -112,7 +110,7 @@ class ClusterIntegrationTest {
 
     @Test
     @Order(1)
-    void clusterConvergesOnSingleLeaderAndFullSymbolList() throws Exception {
+    void clusterConvergesOnSingleLeaderAndFullSymbolList() {
         Map<Integer, JsonNode> statuses = statusFromEachNode(-1);
         assertEquals(PORT_TO_SERVICE.size(), statuses.size(), "not all nodes responded");
 
@@ -179,7 +177,7 @@ class ClusterIntegrationTest {
         Map<Integer, JsonNode> after = statusFromEachNode(leaderPort);
         String newLeader = after.values().iterator().next().path("leaderId").asText();
         System.out.println("[IT] new leader=" + newLeader + " (old=" + oldLeader + ")");
-        assertTrue(!newLeader.equals(oldLeader), "new leader must differ from old");
+        assertFalse(newLeader.equals(oldLeader), "new leader must differ from old");
     }
 
     /**
@@ -187,7 +185,7 @@ class ClusterIntegrationTest {
      * {@code state.stream} and forward each {@link edu.yu.marketmaker.model.StateSnapshot}
      * over TCP to the single worker that owns the symbol — fire-and-forget,
      * with no ACK.
-     *
+     * <p> <p>
      * We exercise this by posting one {@code Fill} per seed symbol to the
      * trading-state HTTP endpoint (which broadcasts a snapshot on
      * {@code state.stream}), then polling every surviving node's
@@ -195,7 +193,7 @@ class ClusterIntegrationTest {
      * counter there only increments inside {@code WorkerForwardReceiver},
      * so a nonzero delta is direct proof that the leader forwarded to that
      * node.
-     *
+     * <p> <p>
      * Assertions:
      * <ul>
      *   <li>Every seed symbol lands on exactly one surviving node.</li>

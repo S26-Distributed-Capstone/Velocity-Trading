@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Profile;
 /**
  * Owns the ZK-side beans every cluster component needs: a started
  * {@link CuratorFramework} and a {@link ZkPaths} helper.
- *
+ * <p>
  * Only active on the {@code market-maker-node} profile, so other parts of
  * the app don't pull in ZK at boot.
  */

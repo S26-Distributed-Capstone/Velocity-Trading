@@ -8,6 +8,7 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.recipes.cache.CuratorCache;
 import org.apache.curator.framework.recipes.cache.CuratorCacheListener;
 import org.apache.curator.framework.recipes.leader.LeaderLatchListener;
+import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -39,11 +40,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Leader-only: subscribes to the trading-state RSocket
  * {@code state.stream} and fans each {@link StateSnapshot} out to the single
  * worker assigned to that symbol.
- *
+ * <p>
  * Transport is raw TCP, one newline-delimited JSON frame per snapshot, per
  * the deployment design: the leader fires-and-forgets; workers never ACK and
  * the leader never learns what the worker did with the update.
- *
+ * <p>
  * Leadership state drives all resources:
  * <ul>
  *   <li>On acquire: start an assignments {@link CuratorCache} to track the
@@ -75,7 +76,7 @@ public class LeaderForwarder implements ApplicationRunner {
 
     private final AtomicBoolean leading = new AtomicBoolean(false);
 
-    /** symbol -> owning worker nodeId. Rebuilt on every assignments znode event. */
+    /** symbol -> owning worker nodeId. Rebuilt on every assignment znode event. */
     private final ConcurrentHashMap<String, String> symbolToNodeId = new ConcurrentHashMap<>();
     /** nodeId -> per-worker sender thread + socket. */
     private final ConcurrentHashMap<String, Sender> senders = new ConcurrentHashMap<>();
@@ -95,7 +96,7 @@ public class LeaderForwarder implements ApplicationRunner {
     }
 
     @Override
-    public void run(ApplicationArguments args) {
+    public void run(@NonNull ApplicationArguments args) {
         clusterNode.getLeaderLatch().addListener(new LeaderLatchListener() {
             @Override
             public void isLeader() {
@@ -176,7 +177,7 @@ public class LeaderForwarder implements ApplicationRunner {
                     continue;
                 }
                 if (data == null || data.length == 0) continue;
-                List<String> syms = mapper.readValue(data, new TypeReference<List<String>>() {});
+                List<String> syms = mapper.readValue(data, new TypeReference<>() {});
                 for (String s : syms) next.put(s, nodeId);
             }
             symbolToNodeId.clear();
@@ -225,8 +226,8 @@ public class LeaderForwarder implements ApplicationRunner {
     }
 
     /**
-     * One thread per destination worker: drains a bounded queue of pre-
-     * serialized frames to a single TCP socket. On write failure, closes the
+     * One thread per destination worker: drains a bounded queue of pre-serialized
+     * frames to a single TCP socket. On write failure, closes the
      * socket and reconnects with a short sleep — fire-and-forget, so we
      * tolerate drops rather than block the dispatcher.
      */

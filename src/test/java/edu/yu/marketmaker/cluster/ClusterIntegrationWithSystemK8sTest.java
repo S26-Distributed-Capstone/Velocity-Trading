@@ -19,11 +19,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.net.http.*;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -32,19 +29,19 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * k3s/Kubernetes variant of {@link ClusterIntegrationWithSystemTest}.
- *
+ * <p>
  * Same end-to-end assertions, but talks to a running cluster via NodePorts
  * defined in {@code k8s/} instead of bringing up a docker-compose stack.
- *
+ * <p>
  * Pre-conditions (run before invoking this test):
  *   1. Build the offline image bundle: {@code ./scripts/build-offline-bundle.sh}
  *   2. Import on every k3s node:        {@code sudo k3s ctr images import images.tar}
  *   3. Apply manifests:                 {@code kubectl apply -k k8s/}
  *   4. Ensure the MM StatefulSet uses the production-quote-generator profile
  *      (edit {@code k8s/market-maker.yaml} SPRING_PROFILES_ACTIVE before applying).
- *
+ * <p>
  * Opt-in: {@code -Dcluster.k8s.it=true}.
- *
+ * <p>
  * Tunables (system properties):
  *   - {@code cluster.k8s.host}      host that exposes NodePorts (default: localhost)
  *   - {@code cluster.k8s.namespace} k8s namespace (default: market-maker)
@@ -72,25 +69,12 @@ class ClusterIntegrationWithSystemK8sTest {
 
     private static final int TOTAL_WAVES = 50;
     private static final long WAVE_INTERVAL_MS = 1500;
-    // Each wave per symbol: SELF_CROSS_PAIRS_PER_WAVE pairs of (BUY@P, SELL@P)
-    // at SELF_CROSS_PRICE — both orders rest inside the MM's spread and match
-    // each other, so MM exposure isn't consumed. Plus one "wide" order per
-    // wave that DOES cross the MM (BUY@101 on odd waves, SELL@99 on even),
-    // which keeps the MM engaged while balancing flow so net position oscillates
-    // around zero rather than running to the ±100 cap.
     private static final int SELF_CROSS_PAIRS_PER_WAVE = 5;
     private static final double SELF_CROSS_PRICE = 100.00;
     private static final double WIDE_BUY_LIMIT = 101.00;
     private static final double WIDE_SELL_LIMIT = 99.00;
-
-    // Mirrors marketmaker.target-spread in application-market-maker-node.properties.
-    // The production quote generator publishes ref±0.05 deterministically, so
-    // the spread should be exactly 0.10 modulo floating-point noise.
     private static final double EXPECTED_SPREAD = 0.10;
     private static final double SPREAD_TOLERANCE = 1e-3;
-    // Bootstrap reference is 100.00. Inventory-aware skew nudges by 0.01 per
-    // share filled, so mid drifts a bit, but the first captured MM quote
-    // should still be near the bootstrap mid.
     private static final double MIN_REASONABLE_MID = 95.0;
     private static final double MAX_REASONABLE_MID = 105.0;
     // ProductionQuoteGenerator caps each side at 100 ± netQuantity, so the
@@ -122,7 +106,7 @@ class ClusterIntegrationWithSystemK8sTest {
         awaitHealthy("external-publisher",   PUBLISHER_PORT,     Duration.ofMinutes(5));
 
         for (Map.Entry<Integer, String> e : MM_PORT_TO_POD.entrySet()) {
-            // mm pods don't expose /health; /marketmaker/status returns 200
+            // mm, pods don't expose /health; /marketmaker/status returns 200
             // once the Spring context is up and the pod has joined the cluster.
             awaitHealthy(e.getValue(), e.getKey(), "/marketmaker/status", Duration.ofMinutes(5));
         }
@@ -141,10 +125,6 @@ class ClusterIntegrationWithSystemK8sTest {
      */
     @Test
     void ordersFlowThroughEntireSystemAndMarketMakersProduceQuotes() throws Exception {
-        // Per-symbol activity log: orders submitted (per wave aggregate, since
-        // individual orders are created server-side by the publisher), quote
-        // observations, and fills. Each entry is timestamped and the file is
-        // sorted by timestamp before flushing.
         Map<String, List<TimedLine>> eventLog = new TreeMap<>();
         for (String s : SEED_SYMBOLS) {
             eventLog.put(s, new ArrayList<>());
@@ -157,12 +137,6 @@ class ClusterIntegrationWithSystemK8sTest {
             loggedQuoteIdsBySymbol.put(s, new HashSet<>());
         }
 
-        // /state/fills returns the entire historical fill table, so fills from
-        // prior test runs would dominate the per-symbol logs. Capture the
-        // wall-clock start of this run and use it as a lower bound when
-        // distributing fills into the per-symbol event lists. Subtract a small
-        // safety margin to forgive minor clock skew between this machine and
-        // trading-state.
         long testStartMillis = System.currentTimeMillis() - 5_000;
 
         System.out.println("[E2E-k8s] seeding bootstrap quotes via external-publisher...");
@@ -346,7 +320,7 @@ class ClusterIntegrationWithSystemK8sTest {
             assertTrue(quote.bidPrice() > 0.0, "quote.bidPrice must be > 0: " + quote);
             assertTrue(quote.askPrice() > 0.0, "quote.askPrice must be > 0: " + quote);
             // Quantities can be 0 — a 0-qty side means the MM has hit its
-            // exposure cap on that side and is signalling "do not match here".
+            // exposure cap on that side and is signaling "do not match here".
             // A fully 0×0 quote is also valid: the MM is paused on both sides.
             // What we don't allow is a negative quantity.
             assertTrue(quote.bidQuantity() >= 0, "quote.bidQuantity must be >= 0: " + quote);
@@ -504,10 +478,6 @@ class ClusterIntegrationWithSystemK8sTest {
         return output.toString();
     }
 
-    private static boolean healthy(int port) {
-        return healthy(port, "/health");
-    }
-
     private static boolean healthy(int port, String path) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
@@ -533,7 +503,7 @@ class ClusterIntegrationWithSystemK8sTest {
         if (resp.statusCode() != 200) {
             fail("seed-quotes returned " + resp.statusCode() + ": " + resp.body());
         }
-        return JSON.readValue(resp.body(), new TypeReference<List<UUID>>() {});
+        return JSON.readValue(resp.body(), new TypeReference<>() {});
     }
 
     private static List<Fill> getAllFills() throws Exception {
@@ -547,7 +517,7 @@ class ClusterIntegrationWithSystemK8sTest {
         }
         return JSON.copy()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .readValue(resp.body(), new TypeReference<List<Fill>>() {});
+                .readValue(resp.body(), new TypeReference<>() {});
     }
 
     private static boolean hasNonZeroPosition(String symbol) {

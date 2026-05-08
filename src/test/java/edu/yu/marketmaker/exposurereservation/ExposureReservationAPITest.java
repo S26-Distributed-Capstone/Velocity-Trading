@@ -19,14 +19,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * HTTP-layer tests for ExposureReservationAPI.
- *
+ * <p>
  * From components.md:
  *   POST /reservations            → request exposure for a proposed quote
  *   POST /reservations/{id}/apply-fill → update reservation after fill
  *   POST /reservations/{id}/release    → release reservation
  *   GET  /exposure                → read current global exposure usage
  *   GET  /health                  → health check
- *
+ * <p>
  * Observable requirements:
  *   - A reservation is either granted, reduced, or rejected
  *   - Retrying the same reservation must not double-reserve

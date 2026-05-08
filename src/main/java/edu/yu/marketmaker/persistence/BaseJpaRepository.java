@@ -6,7 +6,7 @@ import org.springframework.data.repository.NoRepositoryBean;
 /**
  * Base JPA repository interface for entities with identifiable keys.
  * This provides a common contract for all JPA repositories in the persistence layer.
- *
+ * <p>
  * Note: Spring Data JPA requires concrete interfaces for each entity type,
  * so individual repositories must still extend this with specific type parameters.
  *

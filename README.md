@@ -10,7 +10,7 @@
 
 - [Scope (scenarios covered)](docs/scope.md)
 - [Distributed System Challenges](docs/challenges.md)
-- [Workflow Diagrams](docs/workflow.md)
+- [Workflow Diagrams](docs/workflows.md)
 - [Software Architecture Diagrams](docs/architecture.md)
 - [Tools & Technologies](docs/technologies.md)
 

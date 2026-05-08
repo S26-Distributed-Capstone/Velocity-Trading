@@ -10,6 +10,7 @@ import edu.yu.marketmaker.model.*;
 import edu.yu.marketmaker.exposurereservation.ExposureReservationService;
 import edu.yu.marketmaker.persistence.*;
 import edu.yu.marketmaker.persistence.interfaces.*;
+import org.jspecify.annotations.NonNull;
 import org.springframework.context.annotation.*;
 
 import java.util.UUID;
@@ -122,18 +123,7 @@ public class HazelcastConfig {
      * @param mapStoreImpl implementation of MapStore
      */
     private void configureMapStore(MapConfig mapConfig, Object mapStoreImpl) {
-        MapStoreConfig mapStoreConfig = new MapStoreConfig();
-        mapStoreConfig.setImplementation(mapStoreImpl);
-        mapStoreConfig.setEnabled(true);
-
-        // Write-behind configuration for better performance
-        // Writes are batched and flushed to DB asynchronously
-        mapStoreConfig.setWriteDelaySeconds(0); // 0 for write-through, >0 for write-behind
-        mapStoreConfig.setWriteBatchSize(100);
-        mapStoreConfig.setWriteCoalescing(true);
-
-        // Load all keys on startup
-        mapStoreConfig.setInitialLoadMode(MapStoreConfig.InitialLoadMode.EAGER);
+        MapStoreConfig mapStoreConfig = getMapStoreConfig(mapStoreImpl);
 
         mapConfig.setMapStoreConfig(mapStoreConfig);
 
@@ -146,6 +136,22 @@ public class HazelcastConfig {
         // Backup configuration
         mapConfig.setBackupCount(1);
         mapConfig.setAsyncBackupCount(0);
+    }
+
+    private static @NonNull MapStoreConfig getMapStoreConfig(Object mapStoreImpl) {
+        MapStoreConfig mapStoreConfig = new MapStoreConfig();
+        mapStoreConfig.setImplementation(mapStoreImpl);
+        mapStoreConfig.setEnabled(true);
+
+        // Write-behind configuration for better performance
+        // Writes are batched and flushed to DB asynchronously
+        mapStoreConfig.setWriteDelaySeconds(0); // 0 for write-through, >0 for write-behind
+        mapStoreConfig.setWriteBatchSize(100);
+        mapStoreConfig.setWriteCoalescing(true);
+
+        // Load all keys on startup
+        mapStoreConfig.setInitialLoadMode(MapStoreConfig.InitialLoadMode.EAGER);
+        return mapStoreConfig;
     }
 
     /**

@@ -14,14 +14,13 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.*;
 
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
  * Tests for TradingStateService
- *
+ * <p>
  * From requirements.md:
  *   - Each symbol has a single net position
  *   - Positions are updated sequentially by applying recorded fills
@@ -29,7 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   - Position versions are monotonic per symbol
  *   - Fills are recorded durably before any quote replacement occurs
  *   - A fill is immutable once created
- *
+ * <p>
  * From components.md:
  *   - Records fills durably and applies them exactly once
  *   - A fill is not considered reflected until durably recorded

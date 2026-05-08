@@ -8,6 +8,7 @@ import org.apache.curator.framework.recipes.cache.CuratorCacheListener;
 import org.apache.curator.framework.recipes.leader.LeaderLatchListener;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
+import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -24,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Symbol-to-node assignment engine.
- *
+ * <p>
  * Dormant on every JVM until leadership is acquired; once leader it:
  * <ul>
  *   <li>Seeds the symbol znode from {@code symbols.txt} if empty.</li>
@@ -84,7 +85,7 @@ public class Coordinator implements ApplicationRunner {
      * (a benign race during boot).
      */
     @Override
-    public void run(ApplicationArguments args) {
+    public void run(@NonNull ApplicationArguments args) {
         clusterNode.getLeaderLatch().addListener(new LeaderLatchListener() {
             @Override
             public void isLeader() {
@@ -182,7 +183,7 @@ public class Coordinator implements ApplicationRunner {
      * Compute and persist the new assignment map. The leader gets an empty
      * list (dedicated-leader mode); the rest share symbols via
      * {@link EvenSplitStrategy#split}. Stale znodes are pruned at the end.
-     *
+     * <p>
      * Failures are logged but not propagated, so a transient ZK error
      * doesn't kill the scheduler thread.
      */

@@ -59,15 +59,15 @@ public class ReservationMapStore implements MapStore<String, Reservation> {
     public Map<String, Reservation> loadAll(Collection<String> keys) {
         return repository.findAllById(keys).stream()
                 .collect(Collectors.toMap(
-                        entity -> entity.getId().toString(),
-                        entity -> entity.toRecord()
+                        ReservationEntity::getId,
+                        ReservationEntity::toRecord
                 ));
     }
 
     @Override
     public Iterable<String> loadAllKeys() {
         return repository.findAll().stream()
-                .map(entity -> entity.getId().toString())
+                .map(ReservationEntity::getId)
                 .collect(Collectors.toList());
     }
 }

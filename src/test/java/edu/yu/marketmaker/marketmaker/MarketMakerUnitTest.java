@@ -7,12 +7,11 @@ import reactor.core.publisher.Flux;
 
 import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
  * Tests for MarketMaker
- *
+ * <p>
  * From components.md:
  *   - Routes incoming position snapshots to the quote generator
  *   - Filters snapshots to only managed symbols
@@ -36,7 +35,7 @@ class MarketMakerUnitTest {
         return new Position(symbol, netQty, version, UUID.randomUUID());
     }
 
-    private void runWith(StateSnapshot... snapshots) throws Exception {
+    private void runWith(StateSnapshot... snapshots) {
         when(snapshotTracker.getPositions()).thenReturn(Flux.just(snapshots));
         marketMaker.run(null);
     }
@@ -49,7 +48,7 @@ class MarketMakerUnitTest {
      * to produce and publish a new quote.
      */
     @Test
-    void callsGenerateQuoteForManagedSymbol() throws Exception {
+    void callsGenerateQuoteForManagedSymbol() {
         Position pos = makePosition("AAPL", 0, 1L);
         StateSnapshot snapshot = new StateSnapshot(pos, null);
 
@@ -65,7 +64,7 @@ class MarketMakerUnitTest {
      * must be silently ignored so the node only quotes its own assigned symbols.
      */
     @Test
-    void doesNotCallGenerateQuoteForUnmanagedSymbol() throws Exception {
+    void doesNotCallGenerateQuoteForUnmanagedSymbol() {
         Position pos = makePosition("AAPL", 0, 1L);
         StateSnapshot snapshot = new StateSnapshot(pos, null);
 
@@ -83,7 +82,7 @@ class MarketMakerUnitTest {
      * rather than propagating a NullPointerException downstream.
      */
     @Test
-    void ignoresSnapshotWithNullPosition() throws Exception {
+    void ignoresSnapshotWithNullPosition() {
         StateSnapshot snapshot = new StateSnapshot(null, null);
         when(snapshotTracker.getPositions()).thenReturn(Flux.just(snapshot));
 
@@ -99,7 +98,7 @@ class MarketMakerUnitTest {
      * in the handlesSymbol lookup.
      */
     @Test
-    void ignoresSnapshotWithNullSymbol() throws Exception {
+    void ignoresSnapshotWithNullSymbol() {
         Position pos = new Position(null, 0, 1L, null);
         StateSnapshot snapshot = new StateSnapshot(pos, null);
         when(snapshotTracker.getPositions()).thenReturn(Flux.just(snapshot));
@@ -116,7 +115,7 @@ class MarketMakerUnitTest {
      * so it must always be processed. This is the baseline case for version tracking.
      */
     @Test
-    void processesFirstSnapshotForSymbol() throws Exception {
+    void processesFirstSnapshotForSymbol() {
         Position pos = makePosition("AAPL", 0, 1L);
 
         when(snapshotTracker.handlesSymbol("AAPL")).thenReturn(true);
@@ -131,7 +130,7 @@ class MarketMakerUnitTest {
      * the same position state twice would produce redundant quotes and waste exposure capacity.
      */
     @Test
-    void doesNotProcessSameVersionTwice() throws Exception {
+    void doesNotProcessSameVersionTwice() {
         Position pos1 = makePosition("AAPL", 0, 5L);
         Position pos2 = makePosition("AAPL", 0, 5L);
 
@@ -147,7 +146,7 @@ class MarketMakerUnitTest {
      * quote generator. Both version-1 and version-2 snapshots should each produce a quote.
      */
     @Test
-    void processesNewerVersionAfterOlder() throws Exception {
+    void processesNewerVersionAfterOlder() {
         Position pos1 = makePosition("AAPL", 0, 1L);
         Position pos2 = makePosition("AAPL", 5, 2L);
 
@@ -163,7 +162,7 @@ class MarketMakerUnitTest {
      * generate an incorrect quote based on outdated inventory information.
      */
     @Test
-    void skipsOlderVersionAfterNewerHasBeenProcessed() throws Exception {
+    void skipsOlderVersionAfterNewerHasBeenProcessed() {
         Position newer = makePosition("AAPL", 0, 10L);
         Position older = makePosition("AAPL", 0, 5L);
 
@@ -181,7 +180,7 @@ class MarketMakerUnitTest {
      * not skip the second because it saw something for a different symbol first.
      */
     @Test
-    void processesEachManagedSymbolIndependently() throws Exception {
+    void processesEachManagedSymbolIndependently() {
         Position aaplPos = makePosition("AAPL", 0, 1L);
         Position googPos = makePosition("GOOG", 0, 1L);
 
@@ -198,7 +197,7 @@ class MarketMakerUnitTest {
      * skipped, but a first-seen version for GOOG at the same number should go through.
      */
     @Test
-    void versionDeduplicationIsTrackedPerSymbol() throws Exception {
+    void versionDeduplicationIsTrackedPerSymbol() {
         // Version 1 for both symbols should each be processed once
         Position aaplV1 = makePosition("AAPL", 0, 1L);
         Position googV1 = makePosition("GOOG", 0, 1L);
@@ -222,7 +221,7 @@ class MarketMakerUnitTest {
      * should be evaluated independently; only the managed one produces a quote.
      */
     @Test
-    void unmanagedSymbolDoesNotBlockVersionTrackingForOtherSymbols() throws Exception {
+    void unmanagedSymbolDoesNotBlockVersionTrackingForOtherSymbols() {
         Position aaplPos = makePosition("AAPL", 0, 1L);
         Position googPos = makePosition("GOOG", 0, 1L);
 
@@ -241,7 +240,7 @@ class MarketMakerUnitTest {
      * the correct directional adjustment to the reference price and quantities.
      */
     @Test
-    void passesFillFromSnapshotToQuoteGenerator() throws Exception {
+    void passesFillFromSnapshotToQuoteGenerator() {
         Fill fill = new Fill(UUID.randomUUID(), "AAPL", Side.BUY, 10, 100.0, UUID.randomUUID(), System.currentTimeMillis());
         Position pos = makePosition("AAPL", 0, 1L);
         StateSnapshot snapshot = new StateSnapshot(pos, fill);
@@ -258,7 +257,7 @@ class MarketMakerUnitTest {
      * fill as the signal to skip skew and use the existing quote or default prices instead.
      */
     @Test
-    void passesNullFillWhenSnapshotHasNoFill() throws Exception {
+    void passesNullFillWhenSnapshotHasNoFill() {
         Position pos = makePosition("AAPL", 0, 1L);
         StateSnapshot snapshot = new StateSnapshot(pos, null);
 

@@ -13,7 +13,7 @@ import java.util.Set;
 
 /**
  * Operator HTTP API for inspecting cluster state and editing the symbol list.
- *
+ * <p>
  * Endpoints:
  * <ul>
  *   <li>{@code GET  /cluster/status} — any node; returns this node's view of

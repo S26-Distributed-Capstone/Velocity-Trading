@@ -6,7 +6,7 @@ import java.util.*;
  * Pure assignment policy: distribute symbols across workers as evenly as
  * possible, deterministically. Stateless and side-effect-free so it unit-tests
  * without ZK or Spring; the Coordinator wraps it in I/O.
- *
+ * <p>
  * "Even split" means round-robin dealing across sorted-by-id workers —
  * assignments differ in size by at most one, and the mapping is a
  * deterministic function of the inputs.

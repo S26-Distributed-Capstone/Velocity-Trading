@@ -3,7 +3,7 @@ package edu.yu.marketmaker.cluster;
 /**
  * Builds every ZooKeeper path the cluster uses. One type keeps the znode
  * layout in sync across readers and writers.
- *
+ * <p>
  * Layout under {@code base}:
  * <pre>
  *   {base}/election           — Curator LeaderLatch participants
@@ -14,9 +14,7 @@ package edu.yu.marketmaker.cluster;
  *   {base}/assignments/n-X    — JSON array of symbols this node should own
  * </pre>
  */
-public final class ZkPaths {
-
-    private final String base;
+public record ZkPaths(String base) {
 
     /**
      * @param base absolute znode path (must start with '/'), e.g. "/marketmaker"
@@ -29,35 +27,46 @@ public final class ZkPaths {
         this.base = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
-    /** @return the cluster's root znode path (no trailing slash). */
+    /**
+     * @return the cluster's root znode path (no trailing slash).
+     */
+    @Override
     public String base() {
         return base;
     }
 
-    /** @return the LeaderLatch parent znode. */
+    /**
+     * @return the LeaderLatch parent znode.
+     */
     public String election() {
         return base + "/election";
     }
 
-    /** @return the parent znode for ephemeral member entries. */
+    /**
+     * @return the parent znode for ephemeral member entries.
+     */
     public String members() {
         return base + "/members";
     }
 
     /**
      * @return the prefix for EPHEMERAL_SEQUENTIAL creates; ZK appends a
-     *         10-digit suffix.
+     * 10-digit suffix.
      */
     public String memberNodePrefix() {
         return members() + "/n-";
     }
 
-    /** @return the znode storing the symbol list as a JSON array. */
+    /**
+     * @return the znode storing the symbol list as a JSON array.
+     */
     public String symbols() {
         return base + "/symbols";
     }
 
-    /** @return the parent znode for per-node assignment lists. */
+    /**
+     * @return the parent znode for per-node assignment lists.
+     */
     public String assignments() {
         return base + "/assignments";
     }

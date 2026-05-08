@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * TCP server that accepts leader-forwarded {@link StateSnapshot}s on every
  * node. The wire format is newline-delimited JSON: one serialized
  * {@code StateSnapshot} per line.
- *
+ * <p>
  * Fire-and-forget: the receiver never responds and never NACKs. Malformed
  * lines are logged and skipped so a single bad frame can't wedge the stream.
  * The leader drops its own inbound connections because it never gets
@@ -86,22 +86,23 @@ public class WorkerForwardReceiver {
 
     private void handle(Socket s) {
         String remote = s.getRemoteSocketAddress().toString();
-        try (BufferedReader reader = new BufferedReader(
+        try (s; BufferedReader reader = new BufferedReader(
                 new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isEmpty()) continue;
-                try {
-                    StateSnapshot snap = mapper.readValue(line, StateSnapshot.class);
-                    marketMaker.handleForwardedSnapshot(snap);
-                } catch (Exception parseError) {
-                    log.warn("dropping malformed forward frame from {}: {}", remote, parseError.toString());
+            try {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.isEmpty()) continue;
+                    try {
+                        StateSnapshot snap = mapper.readValue(line, StateSnapshot.class);
+                        marketMaker.handleForwardedSnapshot(snap);
+                    } catch (Exception parseError) {
+                        log.warn("dropping malformed forward frame from {}: {}", remote, parseError.toString());
+                    }
                 }
+            } catch (IOException e) {
+                log.debug("connection from {} closed: {}", remote, e.toString());
             }
-        } catch (IOException e) {
-            log.debug("connection from {} closed: {}", remote, e.toString());
-        } finally {
-            try { s.close(); } catch (IOException ignored) {}
+        } catch (IOException ignored) {
         }
     }
 

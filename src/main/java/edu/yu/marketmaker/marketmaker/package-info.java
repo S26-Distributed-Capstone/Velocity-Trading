@@ -1,11 +1,11 @@
 /**
  * Core market-making logic: turning position state into quotes.
- *
+ * <p>
  * A market-maker node owns a subset of symbols (assigned by the
  * {@link edu.yu.marketmaker.cluster cluster} package) and for each owned symbol
  * consumes position/fill updates, tracks inventory, and produces bid/ask quotes
  * that get published back to the exchange.
- *
+ * <p>
  * Key responsibilities:
  * <ul>
  *   <li>Driver loop that reacts to state changes ({@link edu.yu.marketmaker.marketmaker.MarketMaker}).</li>

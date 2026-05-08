@@ -52,12 +52,12 @@ public class StaticPositionRepository implements Repository<String, Position> {
     private static Map<String, Position> generatePositions(Random random) {
         String[] symbols = new String[]{"AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "ABC", "DEF", "XYZ"};
         Map<String, Position> positions = new HashMap<>();
-        for (int i = 0; i < symbols.length; i++) {
-            positions.put(symbols[i], new Position(
-                symbols[i],
-                random.nextInt(201) - 100, // netQuantity: -100 to +100
-                0L, // initial version
-                new UUID(0, 0)  // initial lastFillId
+        for (String symbol : symbols) {
+            positions.put(symbol, new Position(
+                    symbol,
+                    random.nextInt(201) - 100, // netQuantity: -100 to +100
+                    0L, // initial version
+                    new UUID(0, 0)  // initial lastFillId
             ));
         }
         return positions;

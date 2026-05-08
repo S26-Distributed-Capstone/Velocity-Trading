@@ -6,5 +6,5 @@ import edu.yu.marketmaker.model.Quote;
 
 public interface QuoteGenerator {
     
-    public Quote generateQuote(Position position, Fill lastFill);
+    Quote generateQuote(Position position, Fill lastFill);
 }

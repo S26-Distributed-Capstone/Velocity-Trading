@@ -24,9 +24,9 @@ import edu.yu.marketmaker.service.ServiceHealth;
 @Profile("exchange")
 public class ExchangeService {
 
-    private Repository<String, Quote> quoteRepository;
-    private OrderDispatcher orderDispatcher;
-    private ReservationRequester reservationRequester;
+    private final Repository<String, Quote> quoteRepository;
+    private final OrderDispatcher orderDispatcher;
+    private final ReservationRequester reservationRequester;
     private final Logger logger;
 
     public ExchangeService(ReservationRequester reservationRequester, Repository<String, Quote> quoteRepository, OrderDispatcher orderDispatcher) {

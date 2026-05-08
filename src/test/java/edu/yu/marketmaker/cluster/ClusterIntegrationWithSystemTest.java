@@ -4,13 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import edu.yu.marketmaker.model.ExternalOrder;
-import edu.yu.marketmaker.model.Fill;
-import edu.yu.marketmaker.model.Quote;
-import edu.yu.marketmaker.model.Side;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
+import edu.yu.marketmaker.model.*;
+import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.io.BufferedReader;
@@ -27,28 +22,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.SortedMap;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * End-to-end docker-compose system test. Mirrors {@link ClusterIntegrationWithSystemK8sTest}
@@ -509,7 +487,7 @@ class ClusterIntegrationWithSystemTest {
         if (resp.statusCode() != 200) {
             fail("seed-quotes returned " + resp.statusCode() + ": " + resp.body());
         }
-        return JSON.readValue(resp.body(), new TypeReference<List<UUID>>() {});
+        return JSON.readValue(resp.body(), new TypeReference<>() {});
     }
 
     /**
@@ -544,7 +522,7 @@ class ClusterIntegrationWithSystemTest {
         }
         return JSON.copy()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-                .readValue(resp.body(), new TypeReference<List<Fill>>() {});
+                .readValue(resp.body(), new TypeReference<>() {});
     }
 
     private static boolean hasNonZeroPosition(String symbol) {

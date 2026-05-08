@@ -20,10 +20,10 @@ import java.util.Arrays;
 
 /**
  * External Order Publisher
- *
+ * <p>
  * Generates and submits random buy/sell orders to the Exchange API.
  * Purpose: Drive trading activity and test system under load and concurrency.
- *
+ * <p>
  * Key Characteristics:
  * - Stateless: Does NOT track positions, quotes, or any internal state
  * - Concurrent: Issues orders across multiple symbols simultaneously
@@ -42,7 +42,7 @@ public class ExternalOrderPublisher {
 
     private static final long RANDOM_SEED = 1234;
 
-    public ExternalOrderPublisher(String exchangeBaseUrl) throws IOException {
+    public ExternalOrderPublisher(String exchangeBaseUrl) {
         this.exchangeBaseUrl = exchangeBaseUrl;
         this.symbols = Arrays.asList("AAPL", "MSFT", "GOOG", "TSLA");
         this.random = new Random(RANDOM_SEED);
@@ -111,7 +111,7 @@ public class ExternalOrderPublisher {
      * Generate and submit random orders continuously.
      * Creates a concurrent load by submitting orders for multiple symbols simultaneously.
      */
-    public void startGeneratingOrders() throws IOException {
+    public void startGeneratingOrders() {
         logger.info("Starting order generation for symbols: {}", symbols);
 
         this.httpConnection = new PersistentHttpConnection(URI.create(this.exchangeBaseUrl).resolve("/orders"));

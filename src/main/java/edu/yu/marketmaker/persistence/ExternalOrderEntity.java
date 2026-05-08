@@ -49,7 +49,6 @@ public class ExternalOrderEntity implements IdentifiableEntity<UUID> {
 
     /**
      * Returns the unique identifier for this entity.
-     * @return
      */
     @Override
     public UUID getId() {

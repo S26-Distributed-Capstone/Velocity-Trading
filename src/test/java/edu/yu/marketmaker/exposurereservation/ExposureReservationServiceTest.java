@@ -12,20 +12,18 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 /**
  * Tests for ExposureReservationService
- *
+ * <p>
  * From requirements.md:
  *   - Global exposure limit of ±100
  *   - Exposure usage computed from quantities of currently active quotes
  *   - Reservations are granted, reduced, or rejected
  *   - Exposure capacity must be released when quote is filled/replaced/expired
  *   - Capacity must not remain reserved for expired or replaced quotes
- *
+ * <p>
  * From components.md:
  *   - Grants, reduces, or rejects exposure reservations
  *   - Updates reservations when a quote is partially or fully filled
