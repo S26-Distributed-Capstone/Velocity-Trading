@@ -1,114 +1,4 @@
-# Full-system compose for the Market Maker application.
-#
-# `ClusterIntegrationTest` (leader-failover) starts the minimal subset:
-#   zookeeper1/2/3, postgres, trading-state, market-maker-node-{1..7}.
-# `ClusterIntegrationWithSystemTest` (end-to-end) also starts
-#   exchange, exposure-reservation, external-publisher, and overrides the
-#   market-maker profile via QUOTE_GENERATOR_PROFILE=production-quote-generator
-#   so quotes are generated through the real reservation path.
-#
-# HAZELCAST_MEMBERS is set uniformly so every service joins one TCP-IP
-# Hazelcast cluster (bridge networks don't forward multicast). Members not
-# currently running are simply absent from the cluster — harmless for the
-# subset-only run.
-
 services:
-  trading-state:
-    build: .
-    environment:
-      - SPRING_PROFILES_ACTIVE=trading-state
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
-    image: market-maker
-    ports:
-      - "18080:8080"
-      - "7000:7000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  exchange:
-    build: .
-    image: market-maker
-    environment:
-      - SPRING_PROFILES_ACTIVE=exchange
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
-    ports:
-      - "18081:8080"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      trading-state:
-        condition: service_healthy
-      exposure-reservation:
-        condition: service_healthy
-
-  exposure-reservation:
-    build: .
-    image: market-maker
-    environment:
-      - SPRING_PROFILES_ACTIVE=exposure-reservation
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
-    ports:
-      - "18082:8080"
-      - "7002:7000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  external-publisher:
-    build: .
-    image: market-maker
-    environment:
-      - SPRING_PROFILES_ACTIVE=external-publisher
-      - EXCHANGE_BASE_URL=http://exchange:8080
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
-    ports:
-      - "18083:8080"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 30s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      exchange:
-        condition: service_healthy
-
-  postgres:
-    image: postgres
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=marketmaker
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d marketmaker"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
   zookeeper1:
     image: zookeeper:3.9
     hostname: zookeeper1
@@ -157,6 +47,250 @@ services:
       retries: 10
       start_period: 10s
 
+  postgres:
+    image: postgres
+    # The compose stack runs ~17 JVMs (3x trading-state, 3x exchange,
+    # 3x exposure-reservation, 7x market-maker-node, plus publisher) and
+    # every one opens a HikariCP pool against this database. With Postgres'
+    # default max_connections=100 the late-starting market-maker-node JVMs
+    # crash on boot with "FATAL: sorry, too many clients already". Bump
+    # the limit so the full stack can converge.
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=marketmaker
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d marketmaker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ------------------------------------------------------------------
+  # Hazelcast cluster: trading-state, exchange, exposure-reservation each
+  # run as 3 explicit replicas. Each replica needs a distinct hostname
+  # because Hazelcast uses the advertise host as member identity — sharing
+  # one hostname across replicas causes a perpetual split-brain. Replicas
+  # share a network alias so other services can still reach the role by
+  # the bare name (DNS round-robins across all 3 IPs).
+  # ------------------------------------------------------------------
+  trading-state-1:
+    image: market-maker
+    build: .
+    hostname: trading-state-1
+    networks:
+      default:
+        aliases:
+          - trading-state
+    environment:
+      - SPRING_PROFILES_ACTIVE=trading-state
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=trading-state-1
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  trading-state-2:
+    image: market-maker
+    build: .
+    hostname: trading-state-2
+    networks:
+      default:
+        aliases:
+          - trading-state
+    environment:
+      - SPRING_PROFILES_ACTIVE=trading-state
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=trading-state-2
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  trading-state-3:
+    image: market-maker
+    build: .
+    hostname: trading-state-3
+    networks:
+      default:
+        aliases:
+          - trading-state
+    environment:
+      - SPRING_PROFILES_ACTIVE=trading-state
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=trading-state-3
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  exchange-1:
+    image: market-maker
+    build: .
+    hostname: exchange-1
+    networks:
+      default:
+        aliases:
+          - exchange
+    environment:
+      - SPRING_PROFILES_ACTIVE=exchange
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=exchange-1
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  exchange-2:
+    image: market-maker
+    build: .
+    hostname: exchange-2
+    networks:
+      default:
+        aliases:
+          - exchange
+    environment:
+      - SPRING_PROFILES_ACTIVE=exchange
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=exchange-2
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  exchange-3:
+    image: market-maker
+    build: .
+    hostname: exchange-3
+    networks:
+      default:
+        aliases:
+          - exchange
+    environment:
+      - SPRING_PROFILES_ACTIVE=exchange
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=exchange-3
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  exposure-reservation-1:
+    image: market-maker
+    build: .
+    hostname: exposure-reservation-1
+    networks:
+      default:
+        aliases:
+          - exposure-reservation
+    environment:
+      - SPRING_PROFILES_ACTIVE=exposure-reservation
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=exposure-reservation-1
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  exposure-reservation-2:
+    image: market-maker
+    build: .
+    hostname: exposure-reservation-2
+    networks:
+      default:
+        aliases:
+          - exposure-reservation
+    environment:
+      - SPRING_PROFILES_ACTIVE=exposure-reservation
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=exposure-reservation-2
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  exposure-reservation-3:
+    image: market-maker
+    build: .
+    hostname: exposure-reservation-3
+    networks:
+      default:
+        aliases:
+          - exposure-reservation
+    environment:
+      - SPRING_PROFILES_ACTIVE=exposure-reservation
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_ADVERTISE_HOST=exposure-reservation-3
+      - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
+    depends_on:
+      postgres: { condition: service_healthy }
+      zookeeper1: { condition: service_healthy }
+      zookeeper2: { condition: service_healthy }
+      zookeeper3: { condition: service_healthy }
+
+  position-ui:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=position-ui
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+      - HA_SERVICE_NAME=position-ui
+    depends_on:
+      zookeeper1:
+        condition: service_healthy
+      zookeeper2:
+        condition: service_healthy
+      zookeeper3:
+        condition: service_healthy
+    deploy:
+      replicas: 3
+
+  service-lb:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "18080:18080"
+      - "18081:18081"
+      - "18082:18082"
+
+  external-publisher:
+    image: market-maker
+    build: .
+    environment:
+      - SPRING_PROFILES_ACTIVE=external-publisher
+      - EXCHANGE_BASE_URL=http://exchange:8080
+      - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+    ports:
+      - "18083:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      exchange-1:
+        condition: service_started
+    deploy:
+      replicas: 1
+
   market-maker-node-1:
     image: market-maker
     build: .
@@ -165,7 +299,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-1
       - CLUSTER_NODE_ID=market-maker-node-1
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8081:8080"
     volumes:
@@ -188,7 +321,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-2
       - CLUSTER_NODE_ID=market-maker-node-2
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8082:8080"
     volumes:
@@ -211,7 +343,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-3
       - CLUSTER_NODE_ID=market-maker-node-3
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8083:8080"
     volumes:
@@ -234,7 +365,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-4
       - CLUSTER_NODE_ID=market-maker-node-4
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8084:8080"
     volumes:
@@ -257,7 +387,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-5
       - CLUSTER_NODE_ID=market-maker-node-5
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8085:8080"
     volumes:
@@ -280,7 +409,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-6
       - CLUSTER_NODE_ID=market-maker-node-6
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8086:8080"
     volumes:
@@ -303,7 +431,6 @@ services:
       - ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - CLUSTER_ADVERTISE_HOST=market-maker-node-7
       - CLUSTER_NODE_ID=market-maker-node-7
-      - HAZELCAST_MEMBERS=trading-state,exchange,exposure-reservation,external-publisher,market-maker-node-1,market-maker-node-2,market-maker-node-3,market-maker-node-4,market-maker-node-5,market-maker-node-6,market-maker-node-7
     ports:
       - "8087:8080"
     volumes:
