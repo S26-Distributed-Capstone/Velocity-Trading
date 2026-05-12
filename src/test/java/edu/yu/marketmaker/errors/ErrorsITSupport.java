@@ -53,17 +53,16 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 final class ErrorsITSupport {
 
+    private static final int MM_NODES = boundedIntProperty("it.mm.nodes", 3, 1, 7);
+    private static final int HA_REPLICAS = boundedIntProperty("it.ha.replicas", 1, 1, 3);
+
     /** Host port -> compose service name, for the 7 MM nodes. */
     static final SortedMap<Integer, String> MM_PORT_TO_SERVICE;
     static {
         SortedMap<Integer, String> m = new TreeMap<>();
-        m.put(8081, "market-maker-node-1");
-        m.put(8082, "market-maker-node-2");
-        m.put(8083, "market-maker-node-3");
-        m.put(8084, "market-maker-node-4");
-        m.put(8085, "market-maker-node-5");
-        m.put(8086, "market-maker-node-6");
-        m.put(8087, "market-maker-node-7");
+        for (int i = 1; i <= MM_NODES; i++) {
+            m.put(8080 + i, "market-maker-node-" + i);
+        }
         MM_PORT_TO_SERVICE = Collections.unmodifiableSortedMap(m);
     }
 
@@ -81,27 +80,17 @@ final class ErrorsITSupport {
             .build();
     static final Path PROJECT_ROOT = Path.of(".").toAbsolutePath().normalize();
     private static final List<String> TRADING_STATE_SERVICES =
-            List.of("trading-state-1", "trading-state-2", "trading-state-3");
+            replicaServices("trading-state", HA_REPLICAS);
     private static final List<String> EXCHANGE_SERVICES =
-            List.of("exchange-1", "exchange-2", "exchange-3");
+            replicaServices("exchange", HA_REPLICAS);
     private static final List<String> EXPOSURE_RESERVATION_SERVICES =
-            List.of("exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3");
+            replicaServices("exposure-reservation", HA_REPLICAS);
     private static final Map<String, List<String>> LOGICAL_SERVICE_GROUPS = Map.of(
             "trading-state", TRADING_STATE_SERVICES,
             "exchange", EXCHANGE_SERVICES,
             "exposure-reservation", EXPOSURE_RESERVATION_SERVICES
     );
-    private static final Set<String> REQUIRED_STACK_SERVICES = Set.of(
-            "zookeeper1", "zookeeper2", "zookeeper3",
-            "postgres",
-            "service-lb",
-            "external-publisher",
-            "trading-state-1", "trading-state-2", "trading-state-3",
-            "exchange-1", "exchange-2", "exchange-3",
-            "exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3",
-            "market-maker-node-1", "market-maker-node-2", "market-maker-node-3",
-            "market-maker-node-4", "market-maker-node-5", "market-maker-node-6", "market-maker-node-7"
-    );
+    private static final Set<String> REQUIRED_STACK_SERVICES = requiredStackServices();
 
     private ErrorsITSupport() {}
 
@@ -126,23 +115,25 @@ final class ErrorsITSupport {
         assertEquals(0, buildRc, "docker compose build failed");
 
         System.out.println("[" + tag + "] bringing up core infra (zk + postgres + trading-state + exposure-reservation)...");
+        List<String> coreServices = new ArrayList<>(List.of(
+                "zookeeper1", "zookeeper2", "zookeeper3",
+                "postgres"));
+        coreServices.addAll(TRADING_STATE_SERVICES);
+        coreServices.addAll(EXPOSURE_RESERVATION_SERVICES);
+        coreServices.add("service-lb");
         int rcCore = runDocker(productionEnv(),
                 TimeUnit.MINUTES.toMillis(5),
-                "compose", "up", "-d",
-                "zookeeper1", "zookeeper2", "zookeeper3",
-                "postgres",
-                "trading-state-1", "trading-state-2", "trading-state-3",
-                "exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3",
-                "service-lb");
+                concat(new String[]{"compose", "up", "-d"}, coreServices));
         assertEquals(0, rcCore, "docker compose up (core) failed");
 
         awaitHealthy("trading-state", TRADING_STATE_PORT, Duration.ofMinutes(4));
         awaitHealthy("exposure-reservation", EXPOSURE_RES_PORT, Duration.ofMinutes(4));
 
         System.out.println("[" + tag + "] bringing up exchange...");
+        List<String> exchangeServices = new ArrayList<>(EXCHANGE_SERVICES);
         int rcExchange = runDocker(productionEnv(),
                 TimeUnit.MINUTES.toMillis(3),
-                "compose", "up", "-d", "exchange-1", "exchange-2", "exchange-3");
+                concat(new String[]{"compose", "up", "-d"}, exchangeServices));
         assertEquals(0, rcExchange, "docker compose up (exchange) failed");
         awaitHealthy("exchange", EXCHANGE_PORT, Duration.ofMinutes(4));
 
@@ -161,7 +152,7 @@ final class ErrorsITSupport {
                 upCmd.toArray(String[]::new));
         assertEquals(0, rcMm, "docker compose up (market-maker nodes) failed");
 
-        System.out.println("[" + tag + "] waiting for 7-node cluster convergence...");
+        System.out.println("[" + tag + "] waiting for " + MM_PORT_TO_SERVICE.size() + "-node cluster convergence...");
         awaitMmClusterConverged(tag, Duration.ofMinutes(8));
         awaitCondition(Duration.ofMinutes(2), ErrorsITSupport::requiredServicesRunning,
                 "not all expected compose services reached running state");
@@ -515,8 +506,15 @@ final class ErrorsITSupport {
         Set<String> withFills = new TreeSet<>();
         while (Instant.now().isBefore(deadline)) {
             submitOrders(new ArrayList<>(SEED_SYMBOLS), 25);
-            for (String s : SEED_SYMBOLS) {
-                if (getNetPositionOrZero(s) != 0) withFills.add(s);
+            try {
+                for (Fill fill : getAllFills()) {
+                    if (SEED_SYMBOLS.contains(fill.symbol())) {
+                        withFills.add(fill.symbol());
+                    }
+                }
+            } catch (Exception ignoredReadError) {
+                // trading-state may be briefly unavailable during startup churn;
+                // keep driving traffic until the timeout.
             }
             if (withFills.equals(SEED_SYMBOLS)) return;
             Thread.sleep(1500);
@@ -649,5 +647,32 @@ final class ErrorsITSupport {
         System.err.println("---- end diagnostics ----");
 
         throw new AssertionError("cluster did not converge within " + timeout);
+    }
+
+    private static int boundedIntProperty(String name, int defaultValue, int min, int max) {
+        int parsed = Integer.getInteger(name, defaultValue);
+        if (parsed < min) return min;
+        return Math.min(parsed, max);
+    }
+
+    private static List<String> replicaServices(String base, int count) {
+        List<String> out = new ArrayList<>(count);
+        for (int i = 1; i <= count; i++) {
+            out.add(base + "-" + i);
+        }
+        return List.copyOf(out);
+    }
+
+    private static Set<String> requiredStackServices() {
+        Set<String> services = new LinkedHashSet<>(List.of(
+                "zookeeper1", "zookeeper2", "zookeeper3",
+                "postgres",
+                "service-lb",
+                "external-publisher"));
+        services.addAll(TRADING_STATE_SERVICES);
+        services.addAll(EXCHANGE_SERVICES);
+        services.addAll(EXPOSURE_RESERVATION_SERVICES);
+        services.addAll(MM_PORT_TO_SERVICE.values());
+        return Collections.unmodifiableSet(services);
     }
 }

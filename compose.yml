@@ -1,4 +1,7 @@
 services:
+  # Local default: lightweight footprint (single replica for each core JVM role
+  # and 3 market-maker nodes). Use `docker compose --profile full up -d` to
+  # launch the full multi-replica cluster.
   zookeeper1:
     image: zookeeper:3.9
     hostname: zookeeper1
@@ -97,6 +100,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   trading-state-2:
+    profiles: ["full"]
     image: market-maker
     build: .
     hostname: trading-state-2
@@ -116,6 +120,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   trading-state-3:
+    profiles: ["full"]
     image: market-maker
     build: .
     hostname: trading-state-3
@@ -154,6 +159,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   exchange-2:
+    profiles: ["full"]
     image: market-maker
     build: .
     hostname: exchange-2
@@ -173,6 +179,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   exchange-3:
+    profiles: ["full"]
     image: market-maker
     build: .
     hostname: exchange-3
@@ -211,6 +218,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   exposure-reservation-2:
+    profiles: ["full"]
     image: market-maker
     build: .
     hostname: exposure-reservation-2
@@ -230,6 +238,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   exposure-reservation-3:
+    profiles: ["full"]
     image: market-maker
     build: .
     hostname: exposure-reservation-3
@@ -249,6 +258,7 @@ services:
       zookeeper3: { condition: service_healthy }
 
   position-ui:
+    profiles: ["full"]
     image: market-maker
     build: .
     environment:
@@ -358,6 +368,7 @@ services:
         condition: service_healthy
 
   market-maker-node-4:
+    profiles: ["full"]
     image: market-maker
     build: .
     environment:
@@ -380,6 +391,7 @@ services:
         condition: service_healthy
 
   market-maker-node-5:
+    profiles: ["full"]
     image: market-maker
     build: .
     environment:
@@ -402,6 +414,7 @@ services:
         condition: service_healthy
 
   market-maker-node-6:
+    profiles: ["full"]
     image: market-maker
     build: .
     environment:
@@ -424,6 +437,7 @@ services:
         condition: service_healthy
 
   market-maker-node-7:
+    profiles: ["full"]
     image: market-maker
     build: .
     environment:

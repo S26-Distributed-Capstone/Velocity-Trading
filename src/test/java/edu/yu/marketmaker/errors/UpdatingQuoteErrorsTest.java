@@ -62,7 +62,7 @@ class UpdatingQuoteErrorsTest {
     @AfterEach
     void restoreServices() throws Exception {
         // Restore every service the case-* tests may have stopped, so each test
-        // sees a converged 7-node cluster and healthy core services.
+        // sees a converged MM cluster and healthy core services.
         ErrorsITSupport.start("exposure-reservation");
         ErrorsITSupport.awaitHealthy("exposure-reservation",
                 ErrorsITSupport.EXPOSURE_RES_PORT, Duration.ofMinutes(2));
@@ -74,7 +74,8 @@ class UpdatingQuoteErrorsTest {
         }
         ErrorsITSupport.awaitCondition(Duration.ofMinutes(3),
                 ErrorsITSupport::allMmNodesConverged,
-                "cluster did not reconverge to 7 nodes after restoring services");
+                "cluster did not reconverge to " + ErrorsITSupport.MM_PORT_TO_SERVICE.size()
+                        + " nodes after restoring services");
     }
 
     // --- Error Case 4: Market maker goes down before handling the position update ---
@@ -88,14 +89,15 @@ class UpdatingQuoteErrorsTest {
      */
     @Test
     void killedMarketMakerIsEvictedAndSurvivorsReconverge() throws Exception {
+        assertTrue(ErrorsITSupport.MM_PORT_TO_SERVICE.size() >= 2,
+                "this test requires at least 2 MM nodes; got "
+                        + ErrorsITSupport.MM_PORT_TO_SERVICE.size());
         int leaderPort = ErrorsITSupport.leaderPort();
         assertTrue(leaderPort > 0, "no leader before the test");
-        int victimPort = ErrorsITSupport.MM_PORT_TO_SERVICE.keySet().stream()
-                .filter(p -> p != leaderPort)
-                .findFirst().orElseThrow();
+        int victimPort = pickNonLeaderPort(leaderPort);
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
         String observedSymbol = firstAssignedSymbol(victimPort);
-        UUID preCrashQuoteId = ErrorsITSupport.currentExchangeQuoteId(observedSymbol);
+        UUID preCrashQuoteId = awaitQuoteId(observedSymbol, Duration.ofSeconds(30));
         assertNotNull(preCrashQuoteId,
                 "expected an active quote before crash for observed symbol " + observedSymbol);
 
@@ -121,13 +123,14 @@ class UpdatingQuoteErrorsTest {
      */
     @Test
     void restartedMarketMakerRejoinsAndClusterReturnsToSevenMembers() throws Exception {
+        assertTrue(ErrorsITSupport.MM_PORT_TO_SERVICE.size() >= 2,
+                "this test requires at least 2 MM nodes; got "
+                        + ErrorsITSupport.MM_PORT_TO_SERVICE.size());
         int leaderPort = ErrorsITSupport.leaderPort();
-        int victimPort = ErrorsITSupport.MM_PORT_TO_SERVICE.keySet().stream()
-                .filter(p -> p != leaderPort)
-                .findFirst().orElseThrow();
+        int victimPort = pickNonLeaderPort(leaderPort);
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
         String observedSymbol = firstAssignedSymbol(victimPort);
-        UUID preCrashQuoteId = ErrorsITSupport.currentExchangeQuoteId(observedSymbol);
+        UUID preCrashQuoteId = awaitQuoteId(observedSymbol, Duration.ofSeconds(30));
         assertNotNull(preCrashQuoteId,
                 "expected an active quote before crash for observed symbol " + observedSymbol);
 
@@ -140,7 +143,8 @@ class UpdatingQuoteErrorsTest {
         ErrorsITSupport.start(victimService);
         ErrorsITSupport.awaitCondition(Duration.ofMinutes(3),
                 ErrorsITSupport::allMmNodesConverged,
-                "cluster did not return to 7-member convergence after restart");
+                "cluster did not return to " + ErrorsITSupport.MM_PORT_TO_SERVICE.size()
+                        + "-member convergence after restart");
 
         // Sanity: the restarted node has a non-empty assigned set or shows up
         // in another node's view as a member; both are guaranteed by
@@ -176,6 +180,9 @@ class UpdatingQuoteErrorsTest {
      */
     @Test
     void killedMarketMakerNeverPushesExposureOverTotalCapacity() throws Exception {
+        assertTrue(ErrorsITSupport.MM_PORT_TO_SERVICE.size() >= 2,
+                "this test requires at least 2 MM nodes; got "
+                        + ErrorsITSupport.MM_PORT_TO_SERVICE.size());
         // Probe before fault injection.
         JsonNode before = ErrorsITSupport.getExposureOrNull();
         assertNotNull(before, "exposure must be reachable before fault injection");
@@ -185,9 +192,7 @@ class UpdatingQuoteErrorsTest {
         // Kill a non-leader node mid-flight while traffic is producing fills
         // (and thus driving the reserve/release cycle on every quote refresh).
         int leaderPort = ErrorsITSupport.leaderPort();
-        int victimPort = ErrorsITSupport.MM_PORT_TO_SERVICE.keySet().stream()
-                .filter(p -> p != leaderPort)
-                .findFirst().orElseThrow();
+        int victimPort = pickNonLeaderPort(leaderPort);
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
 
         for (int wave = 0; wave < 3; wave++) {
@@ -270,6 +275,13 @@ class UpdatingQuoteErrorsTest {
      */
     @Test
     void exchangeDownFreezesQuoteUpdatesAndResumesAfterRestart() throws Exception {
+        ErrorsITSupport.awaitCondition(Duration.ofMinutes(1), () -> {
+            for (String s : ErrorsITSupport.SEED_SYMBOLS) {
+                if (ErrorsITSupport.currentExchangeQuoteId(s) == null) return false;
+            }
+            return true;
+        }, "not every seed symbol had an active quote before exchange outage");
+
         Map<String, UUID> before = new HashMap<>();
         for (String s : ErrorsITSupport.SEED_SYMBOLS) {
             UUID id = ErrorsITSupport.currentExchangeQuoteId(s);
@@ -322,5 +334,23 @@ class UpdatingQuoteErrorsTest {
             return "AAPL";
         }
         return assigned.get(0).asText("AAPL");
+    }
+
+    private static int pickNonLeaderPort(int leaderPort) {
+        return ErrorsITSupport.MM_PORT_TO_SERVICE.keySet().stream()
+                .filter(p -> p != leaderPort)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no non-leader MM node available (leaderPort=" + leaderPort
+                                + ", totalNodes=" + ErrorsITSupport.MM_PORT_TO_SERVICE.size() + ")"));
+    }
+
+    private static UUID awaitQuoteId(String symbol, Duration timeout) throws Exception {
+        final UUID[] out = new UUID[1];
+        ErrorsITSupport.awaitCondition(timeout, () -> {
+            out[0] = ErrorsITSupport.currentExchangeQuoteId(symbol);
+            return out[0] != null;
+        }, "quote did not appear for symbol " + symbol + " within " + timeout);
+        return out[0];
     }
 }
