@@ -19,3 +19,5 @@ target/
 *.csv
 *.Identifier
 cmake-build-debug/
+.cursor
+.cursorj
