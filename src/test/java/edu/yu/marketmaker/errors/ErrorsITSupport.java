@@ -215,6 +215,15 @@ final class ErrorsITSupport {
             }
             Thread.sleep(2000);
         }
+        System.err.println("[ErrorsIT] " + serviceName + " did not respond on /health within " + timeout);
+        List<String> targets = resolveComposeTargets(serviceName);
+        System.err.println("---- docker compose ps " + String.join(" ", targets) + " ----");
+        System.err.println(runDockerCapturing(productionEnv(), TimeUnit.SECONDS.toMillis(30),
+                concat(new String[]{"compose", "ps"}, targets)));
+        System.err.println("---- docker compose logs --tail 300 " + String.join(" ", targets) + " ----");
+        System.err.println(runDockerCapturing(productionEnv(), TimeUnit.MINUTES.toMillis(1),
+                concat(new String[]{"compose", "logs", "--tail", "300"}, targets)));
+        System.err.println("---- end logs ----");
         throw new AssertionError(serviceName + " not healthy within " + timeout);
     }
 
@@ -483,8 +492,26 @@ final class ErrorsITSupport {
      * "system is working" baseline before injecting a fault.
      */
     static void driveTrafficUntilEverySymbolHasFill(Duration timeout) throws Exception {
-        Set<UUID> ignored = new HashSet<>(seedQuotes(new ArrayList<>(SEED_SYMBOLS)));
         Instant deadline = Instant.now().plus(timeout);
+        AssertionError lastSeedFailure = null;
+        Set<UUID> ignored = Set.of();
+        while (Instant.now().isBefore(deadline)) {
+            try {
+                ignored = new HashSet<>(seedQuotes(new ArrayList<>(SEED_SYMBOLS)));
+                break;
+            } catch (AssertionError e) {
+                lastSeedFailure = e;
+            }
+            Thread.sleep(1000);
+        }
+        if (ignored.isEmpty()) {
+            if (lastSeedFailure == null) {
+                throw new AssertionError("seed-quotes did not succeed before " + timeout);
+            }
+            throw new AssertionError("seed-quotes did not succeed before " + timeout
+                    + " (last failure: " + lastSeedFailure.getMessage() + ")", lastSeedFailure);
+        }
+
         Set<String> withFills = new TreeSet<>();
         while (Instant.now().isBefore(deadline)) {
             submitOrders(new ArrayList<>(SEED_SYMBOLS), 25);

@@ -94,6 +94,10 @@ class UpdatingQuoteErrorsTest {
                 .filter(p -> p != leaderPort)
                 .findFirst().orElseThrow();
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
+        String observedSymbol = firstAssignedSymbol(victimPort);
+        UUID preCrashQuoteId = ErrorsITSupport.currentExchangeQuoteId(observedSymbol);
+        assertNotNull(preCrashQuoteId,
+                "expected an active quote before crash for observed symbol " + observedSymbol);
 
         ErrorsITSupport.kill(victimService);
 
@@ -101,6 +105,12 @@ class UpdatingQuoteErrorsTest {
                 () -> ErrorsITSupport.mmSurvivorsConverged(victimPort,
                         ErrorsITSupport.MM_PORT_TO_SERVICE.size() - 1),
                 "survivors did not reconverge after killing " + victimService);
+
+        // Case 4 outcome: the killed node misses updates, but the symbol remains
+        // quotable in the cluster while survivors continue serving traffic.
+        ErrorsITSupport.awaitCondition(Duration.ofSeconds(30),
+                () -> ErrorsITSupport.currentExchangeQuoteId(observedSymbol) != null,
+                "observed symbol became unquotable after node crash: " + observedSymbol);
     }
 
     /**
@@ -116,6 +126,10 @@ class UpdatingQuoteErrorsTest {
                 .filter(p -> p != leaderPort)
                 .findFirst().orElseThrow();
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
+        String observedSymbol = firstAssignedSymbol(victimPort);
+        UUID preCrashQuoteId = ErrorsITSupport.currentExchangeQuoteId(observedSymbol);
+        assertNotNull(preCrashQuoteId,
+                "expected an active quote before crash for observed symbol " + observedSymbol);
 
         ErrorsITSupport.kill(victimService);
         ErrorsITSupport.awaitCondition(Duration.ofMinutes(2),
@@ -135,6 +149,18 @@ class UpdatingQuoteErrorsTest {
         JsonNode status = ErrorsITSupport.mmStatusOrNull(victimPort);
         assertNotNull(status,
                 "restarted MM at port " + victimPort + " did not respond to /marketmaker/status");
+
+        // Case 4 recovery: after restart and fresh traffic, observed symbol
+        // should eventually rotate away from the pre-crash quote id.
+        ErrorsITSupport.awaitCondition(Duration.ofMinutes(2), () -> {
+            try {
+                ErrorsITSupport.submitOrders(List.of(observedSymbol), 5);
+            } catch (Exception ignored) {
+                // tolerate transient failures while services settle
+            }
+            UUID after = ErrorsITSupport.currentExchangeQuoteId(observedSymbol);
+            return after != null && !after.equals(preCrashQuoteId);
+        }, "observed symbol quote did not refresh after node restart: " + observedSymbol);
     }
 
     // --- Error Case 5: Crash after reservation but before publishing the quote ---
@@ -284,5 +310,17 @@ class UpdatingQuoteErrorsTest {
             }
             return false;
         }, "no quoteId rotation observed after exchange restart");
+    }
+
+    private static String firstAssignedSymbol(int mmPort) {
+        JsonNode status = ErrorsITSupport.mmStatusOrNull(mmPort);
+        if (status == null) {
+            return "AAPL";
+        }
+        JsonNode assigned = status.path("assigned");
+        if (!assigned.isArray() || assigned.isEmpty()) {
+            return "AAPL";
+        }
+        return assigned.get(0).asText("AAPL");
     }
 }
