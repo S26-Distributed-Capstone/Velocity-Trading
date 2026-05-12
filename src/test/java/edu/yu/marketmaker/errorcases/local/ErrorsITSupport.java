@@ -1,4 +1,4 @@
-package edu.yu.marketmaker.errorcases.cluster;
+package edu.yu.marketmaker.errorcases.local;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Shared compose-stack orchestration and HTTP helpers for the
- * {@code edu.yu.marketmaker.errorcases.cluster} integration tests.
+ * {@code edu.yu.marketmaker.errorcases.local} integration tests.
  * <p>
  * Mirrors the boot sequence used by
  * {@link edu.yu.marketmaker.cluster.ClusterIntegrationWithSystemTest} so each
