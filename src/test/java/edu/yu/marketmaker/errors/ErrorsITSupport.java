@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.yu.marketmaker.model.Fill;
 
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -15,8 +17,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -76,6 +80,28 @@ final class ErrorsITSupport {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
     static final Path PROJECT_ROOT = Path.of(".").toAbsolutePath().normalize();
+    private static final List<String> TRADING_STATE_SERVICES =
+            List.of("trading-state-1", "trading-state-2", "trading-state-3");
+    private static final List<String> EXCHANGE_SERVICES =
+            List.of("exchange-1", "exchange-2", "exchange-3");
+    private static final List<String> EXPOSURE_RESERVATION_SERVICES =
+            List.of("exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3");
+    private static final Map<String, List<String>> LOGICAL_SERVICE_GROUPS = Map.of(
+            "trading-state", TRADING_STATE_SERVICES,
+            "exchange", EXCHANGE_SERVICES,
+            "exposure-reservation", EXPOSURE_RESERVATION_SERVICES
+    );
+    private static final Set<String> REQUIRED_STACK_SERVICES = Set.of(
+            "zookeeper1", "zookeeper2", "zookeeper3",
+            "postgres",
+            "service-lb",
+            "external-publisher",
+            "trading-state-1", "trading-state-2", "trading-state-3",
+            "exchange-1", "exchange-2", "exchange-3",
+            "exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3",
+            "market-maker-node-1", "market-maker-node-2", "market-maker-node-3",
+            "market-maker-node-4", "market-maker-node-5", "market-maker-node-6", "market-maker-node-7"
+    );
 
     private ErrorsITSupport() {}
 
@@ -104,7 +130,10 @@ final class ErrorsITSupport {
                 TimeUnit.MINUTES.toMillis(5),
                 "compose", "up", "-d",
                 "zookeeper1", "zookeeper2", "zookeeper3",
-                "postgres", "trading-state", "exposure-reservation");
+                "postgres",
+                "trading-state-1", "trading-state-2", "trading-state-3",
+                "exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3",
+                "service-lb");
         assertEquals(0, rcCore, "docker compose up (core) failed");
 
         awaitHealthy("trading-state", TRADING_STATE_PORT, Duration.ofMinutes(4));
@@ -113,7 +142,7 @@ final class ErrorsITSupport {
         System.out.println("[" + tag + "] bringing up exchange...");
         int rcExchange = runDocker(productionEnv(),
                 TimeUnit.MINUTES.toMillis(3),
-                "compose", "up", "-d", "exchange");
+                "compose", "up", "-d", "exchange-1", "exchange-2", "exchange-3");
         assertEquals(0, rcExchange, "docker compose up (exchange) failed");
         awaitHealthy("exchange", EXCHANGE_PORT, Duration.ofMinutes(4));
 
@@ -133,8 +162,9 @@ final class ErrorsITSupport {
         assertEquals(0, rcMm, "docker compose up (market-maker nodes) failed");
 
         System.out.println("[" + tag + "] waiting for 7-node cluster convergence...");
-        awaitCondition(Duration.ofMinutes(4), ErrorsITSupport::allMmNodesConverged,
-                "cluster did not converge within 4 minutes");
+        awaitMmClusterConverged(tag, Duration.ofMinutes(8));
+        awaitCondition(Duration.ofMinutes(2), ErrorsITSupport::requiredServicesRunning,
+                "not all expected compose services reached running state");
         System.out.println("[" + tag + "] full stack up.");
     }
 
@@ -148,16 +178,18 @@ final class ErrorsITSupport {
 
     /** Kill {@code service} with SIGKILL — simulates a hard crash. */
     static void kill(String service) throws Exception {
+        List<String> targets = resolveComposeTargets(service);
         int rc = runDocker(productionEnv(), TimeUnit.MINUTES.toMillis(1),
-                "compose", "kill", "-s", "SIGKILL", service);
-        assertEquals(0, rc, "docker compose kill failed for " + service);
+                concat(new String[]{"compose", "kill", "-s", "SIGKILL"}, targets));
+        assertEquals(0, rc, "docker compose kill failed for " + targets);
     }
 
     /** Stop {@code service} gracefully (SIGTERM, then SIGKILL after timeout). */
     static void stop(String service) throws Exception {
+        List<String> targets = resolveComposeTargets(service);
         int rc = runDocker(productionEnv(), TimeUnit.MINUTES.toMillis(1),
-                "compose", "stop", "-t", "5", service);
-        assertEquals(0, rc, "docker compose stop failed for " + service);
+                concat(new String[]{"compose", "stop", "-t", "5"}, targets));
+        assertEquals(0, rc, "docker compose stop failed for " + targets);
     }
 
     /**
@@ -165,9 +197,10 @@ final class ErrorsITSupport {
      * container if it was killed and waits for the depends_on chain.
      */
     static void start(String service) throws Exception {
+        List<String> targets = resolveComposeTargets(service);
         int rc = runDocker(productionEnv(), TimeUnit.MINUTES.toMillis(3),
-                "compose", "up", "-d", service);
-        assertEquals(0, rc, "docker compose up failed for " + service);
+                concat(new String[]{"compose", "up", "-d"}, targets));
+        assertEquals(0, rc, "docker compose up failed for " + targets);
     }
 
     // ---------- health & convergence ----------
@@ -281,6 +314,36 @@ final class ErrorsITSupport {
      * publisher-issued quotes from those written by market-makers.
      */
     static List<UUID> seedQuotes(List<String> symbols) throws Exception {
+        Instant deadline = Instant.now().plus(Duration.ofMinutes(2));
+        String lastFailure = null;
+        Exception lastException = null;
+        while (Instant.now().isBefore(deadline)) {
+            try {
+                HttpResponse<String> resp = postSeedQuotes(symbols);
+                if (resp.statusCode() == 200) {
+                    return JSON.readValue(resp.body(), new TypeReference<List<UUID>>() {});
+                }
+                lastFailure = "seed-quotes returned " + resp.statusCode() + ": " + resp.body();
+            } catch (IOException | InterruptedException e) {
+                lastException = e;
+                lastFailure = "seed-quotes request failed: " + e;
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            Thread.sleep(1000);
+        }
+        if (lastException != null) {
+            fail(lastFailure, lastException);
+        }
+        fail(lastFailure == null
+                ? "seed-quotes did not complete before retry deadline"
+                : lastFailure);
+        return List.of();
+    }
+
+    private static HttpResponse<String> postSeedQuotes(List<String> symbols) throws IOException, InterruptedException {
         String body = JSON.writeValueAsString(symbols);
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + PUBLISHER_PORT + "/publisher/seed-quotes"))
@@ -288,11 +351,7 @@ final class ErrorsITSupport {
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
-        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() != 200) {
-            fail("seed-quotes returned " + resp.statusCode() + ": " + resp.body());
-        }
-        return JSON.readValue(resp.body(), new TypeReference<List<UUID>>() {});
+        return HTTP.send(req, HttpResponse.BodyHandlers.ofString());
     }
 
     /**
@@ -474,7 +533,94 @@ final class ErrorsITSupport {
         return p.exitValue();
     }
 
+    private static String runDockerCapturing(Map<String, String> env, long timeoutMs, String... args) throws Exception {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("docker");
+        Collections.addAll(cmd, args);
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .directory(PROJECT_ROOT.toFile())
+                .redirectErrorStream(true);
+        if (env != null) {
+            pb.environment().putAll(env);
+        }
+        Process p = pb.start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                output.append(line).append('\n');
+            }
+        }
+        if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+            p.destroyForcibly();
+            output.append("[timed out waiting for docker command]\n");
+        }
+        return output.toString();
+    }
+
     private static Map<String, String> productionEnv() {
         return Map.of("QUOTE_GENERATOR_PROFILE", "production-quote-generator");
+    }
+
+    private static List<String> resolveComposeTargets(String service) {
+        return LOGICAL_SERVICE_GROUPS.getOrDefault(service, List.of(service));
+    }
+
+    private static String[] concat(String[] prefix, List<String> suffix) {
+        String[] out = Arrays.copyOf(prefix, prefix.length + suffix.size());
+        for (int i = 0; i < suffix.size(); i++) {
+            out[prefix.length + i] = suffix.get(i);
+        }
+        return out;
+    }
+
+    private static boolean requiredServicesRunning() {
+        try {
+            String output = runDockerCapturing(productionEnv(), TimeUnit.SECONDS.toMillis(30),
+                    "compose", "ps", "--services", "--filter", "status=running");
+            Set<String> running = new LinkedHashSet<>();
+            for (String line : output.split("\\R")) {
+                String trimmed = line.trim();
+                if (!trimmed.isEmpty()) running.add(trimmed);
+            }
+            return running.containsAll(REQUIRED_STACK_SERVICES);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void awaitMmClusterConverged(String tag, Duration timeout) throws Exception {
+        Instant deadline = Instant.now().plus(timeout);
+        while (Instant.now().isBefore(deadline)) {
+            if (allMmNodesConverged()) {
+                return;
+            }
+            Thread.sleep(2000);
+        }
+
+        System.err.println("[" + tag + "] MM cluster failed to converge within " + timeout);
+        System.err.println("---- docker compose ps ----");
+        System.err.println(runDockerCapturing(productionEnv(), TimeUnit.SECONDS.toMillis(30),
+                "compose", "ps"));
+
+        for (Map.Entry<Integer, String> mm : MM_PORT_TO_SERVICE.entrySet()) {
+            int port = mm.getKey();
+            String service = mm.getValue();
+            JsonNode status = clusterStatusOrNull(port);
+            System.err.println("---- /cluster/status for " + service + " on :" + port + " ----");
+            if (status == null) {
+                System.err.println("(unreachable or non-200)");
+            } else {
+                System.err.println(status.toPrettyString());
+            }
+        }
+
+        List<String> mmServices = new ArrayList<>(MM_PORT_TO_SERVICE.values());
+        System.err.println("---- docker compose logs --tail 150 market-maker nodes ----");
+        System.err.println(runDockerCapturing(productionEnv(), TimeUnit.MINUTES.toMillis(2),
+                concat(new String[]{"compose", "logs", "--tail", "150"}, mmServices)));
+        System.err.println("---- end diagnostics ----");
+
+        throw new AssertionError("cluster did not converge within " + timeout);
     }
 }

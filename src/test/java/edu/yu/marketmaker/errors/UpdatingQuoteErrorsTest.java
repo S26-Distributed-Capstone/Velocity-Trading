@@ -81,7 +81,7 @@ class UpdatingQuoteErrorsTest {
 
     /**
      * Kill a non-leader market-maker node. The remaining 6 nodes must
-     * reconverge to a single agreed leader and the killed node must be
+     * reconverge to a single agreed leader, and the killed node must be
      * evicted from the live members set. This is the documented case-4
      * outcome from the cluster's perspective: a missed position update on
      * one node does not block the others.

@@ -18,7 +18,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
-import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -49,8 +48,8 @@ import java.util.UUID;
  * {@link ServiceRegistry} ZK watch — rather than the round-robin
  * {@code exchange} DNS alias, which would land on a non-leader replica 2/3 of
  * the time and get rejected with HTTP 503 by {@code LeaderGuardFilter}. The
- * helper retries briefly on 503 / connect failure so an in-flight failover
- * doesn't fail user-visible requests.
+     * helper retries briefly on 503 / transient I/O failures so an in-flight
+     * failover doesn't fail user-visible requests.
  */
 @RestController
 @Profile("external-publisher")
@@ -152,7 +151,9 @@ public class ExternalOrderPublisherController {
      * only the leader accepts mutating requests, the rest reply 503. The
      * leader's hostname is published in {@link ServiceRegistry}, so we look
      * it up per-request and retry briefly on 503 (stale registry cache during
-     * failover) or on a {@link ConnectException} (leader pod restarting).
+     * failover) or on transient {@link IOException}s from the HTTP client
+     * (e.g. {@link java.net.ConnectException}, {@link java.net.http.HttpConnectTimeoutException}
+     * while the leader is restarting or the network is settling).
      *
      * @throws IllegalStateException if no leader can be reached within {@link #LEADER_RESOLVE_BUDGET_MS}
      */
@@ -186,7 +187,8 @@ public class ExternalOrderPublisherController {
                 if (resp.statusCode() != 503) return resp;
                 // 503 from LeaderGuardFilter: registry cache caught a stale endpoint.
                 // Sleep briefly and let the watcher catch up before retrying.
-            } catch (ConnectException e) {
+            } catch (IOException e) {
+                // HttpClient uses HttpConnectTimeoutException (not a ConnectException) on connect timeout.
                 lastTransport = e;
             }
             Thread.sleep(LEADER_RESOLVE_BACKOFF_MS);
