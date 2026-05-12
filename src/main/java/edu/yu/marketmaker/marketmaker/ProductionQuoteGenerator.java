@@ -1,5 +1,6 @@
 package edu.yu.marketmaker.marketmaker;
 
+import edu.yu.marketmaker.ha.LeaderAwareRSocketClient;
 import edu.yu.marketmaker.memory.Repository;
 import edu.yu.marketmaker.model.Fill;
 import edu.yu.marketmaker.model.Position;
@@ -10,7 +11,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.context.annotation.Primary;
-import org.springframework.messaging.rsocket.RSocketRequester;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
@@ -21,8 +21,9 @@ import java.util.UUID;
 public class ProductionQuoteGenerator implements QuoteGenerator {
 
     private static final Logger logger = LoggerFactory.getLogger(ProductionQuoteGenerator.class);
+    private static final String EXPOSURE_RESERVATION_SERVICE = "exposure-reservation";
 
-    private final RSocketRequester reservationRequester;
+    private final LeaderAwareRSocketClient reservationClient;
     private final int defaultQuantity;
     private final double targetSpread;
     private final Repository<String, Quote> quoteRepository;
@@ -37,14 +38,12 @@ public class ProductionQuoteGenerator implements QuoteGenerator {
      * @param targetSpread
      */
     public ProductionQuoteGenerator(
-            RSocketRequester.Builder rsocketRequesterBuilder,
+            LeaderAwareRSocketClient reservationClient,
             Repository<String, Quote> quoteRepository,
-            @Value("${marketmaker.exposure-reservation.host:exposure-reservation}") String reservationHost,
-            @Value("${marketmaker.exposure-reservation.port:7000}") int reservationPort,
             @Value("${marketmaker.default-quote-quantity:10}") int defaultQuantity,
             @Value("${marketmaker.target-spread:0.10}") double targetSpread
     ) {
-        this.reservationRequester = rsocketRequesterBuilder.tcp(reservationHost, reservationPort);
+        this.reservationClient = reservationClient;
         this.defaultQuantity = defaultQuantity;
         this.targetSpread = targetSpread;
         this.quoteRepository = quoteRepository;
@@ -108,10 +107,9 @@ public class ProductionQuoteGenerator implements QuoteGenerator {
                 System.currentTimeMillis() + 30_000
         );
 
-        ReservationResponse reservation = reservationRequester
-                .route("reservations")
-                .data(proposed)
-                .retrieveMono(ReservationResponse.class)
+        ReservationResponse reservation = reservationClient
+                .requestResponse(EXPOSURE_RESERVATION_SERVICE, "reservations",
+                        proposed, ReservationResponse.class)
                 .block();
 
         if (reservation == null) {

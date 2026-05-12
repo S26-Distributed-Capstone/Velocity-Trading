@@ -184,7 +184,7 @@ class UpdatingQuoteErrorsTest {
                 "this test requires at least 2 MM nodes; got "
                         + ErrorsITSupport.MM_PORT_TO_SERVICE.size());
         // Probe before fault injection.
-        JsonNode before = ErrorsITSupport.getExposureOrNull();
+        JsonNode before = awaitExposure(Duration.ofSeconds(30));
         assertNotNull(before, "exposure must be reachable before fault injection");
         int totalCapacity = before.path("totalCapacity").asInt();
         assertTrue(totalCapacity > 0, "totalCapacity must be > 0: " + before);
@@ -198,7 +198,7 @@ class UpdatingQuoteErrorsTest {
         for (int wave = 0; wave < 3; wave++) {
             ErrorsITSupport.submitOrders(List.of("AAPL", "GOOG", "MSFT"), 5);
             if (wave == 1) ErrorsITSupport.kill(victimService);
-            JsonNode now = ErrorsITSupport.getExposureOrNull();
+            JsonNode now = awaitExposure(Duration.ofSeconds(30));
             assertNotNull(now, "exposure became unreachable mid-test");
             int bid = now.path("bidUsage").asInt();
             int ask = now.path("askUsage").asInt();
@@ -254,12 +254,10 @@ class UpdatingQuoteErrorsTest {
                 ErrorsITSupport.EXPOSURE_RES_PORT, Duration.ofMinutes(2));
 
         // After restart MMs must be able to publish fresh quotes again.
+        // Drive deterministic position updates directly into trading-state so
+        // this check does not depend on exchange-side matching depth.
         ErrorsITSupport.awaitCondition(Duration.ofMinutes(2), () -> {
-            try {
-                ErrorsITSupport.submitOrders(List.of("AAPL"), 5);
-            } catch (Exception ignored) {
-                // tolerate transient failures while services settle
-            }
+            ErrorsITSupport.submitSyntheticFill("AAPL");
             UUID after = ErrorsITSupport.currentExchangeQuoteId("AAPL");
             return after != null && !idsSeenDuringOutage.contains(after);
         }, "AAPL quoteId did not rotate after exposure-reservation came back");
@@ -351,6 +349,15 @@ class UpdatingQuoteErrorsTest {
             out[0] = ErrorsITSupport.currentExchangeQuoteId(symbol);
             return out[0] != null;
         }, "quote did not appear for symbol " + symbol + " within " + timeout);
+        return out[0];
+    }
+
+    private static JsonNode awaitExposure(Duration timeout) throws Exception {
+        final JsonNode[] out = new JsonNode[1];
+        ErrorsITSupport.awaitCondition(timeout, () -> {
+            out[0] = ErrorsITSupport.getExposureOrNull();
+            return out[0] != null;
+        }, "exposure did not become reachable within " + timeout);
         return out[0];
     }
 }

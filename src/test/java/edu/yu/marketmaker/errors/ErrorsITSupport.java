@@ -412,6 +412,36 @@ final class ErrorsITSupport {
         }
     }
 
+    /**
+     * Submit a synthetic fill directly to trading-state's HTTP endpoint.
+     * Useful in error-path tests where exchange-side order matching may be
+     * unavailable but we still need a deterministic position update event.
+     *
+     * @return true on HTTP 200, false otherwise
+     */
+    static boolean submitSyntheticFill(String symbol) {
+        try {
+            Map<String, Object> body = Map.of(
+                    "orderId", UUID.randomUUID().toString(),
+                    "symbol", symbol,
+                    "side", "BUY",
+                    "quantity", 1,
+                    "price", 100.0,
+                    "quoteId", UUID.randomUUID().toString(),
+                    "createdAt", System.currentTimeMillis()
+            );
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:" + TRADING_STATE_PORT + "/state/fills"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(5))
+                    .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
+                    .build();
+            return HTTP.send(req, HttpResponse.BodyHandlers.ofString()).statusCode() == 200;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** Every fill currently recorded by trading-state. */
     static List<Fill> getAllFills() throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
