@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -14,6 +15,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Component
@@ -26,6 +30,16 @@ public class MarketMaker implements ApplicationRunner {
     private final QuoteGenerator quoteGenerator;
     private final Map<String, Long> lastProcessedVersionBySymbol = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> forwardedCountBySymbol = new ConcurrentHashMap<>();
+    private final Map<String, Position> latestPositionBySymbol = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService quoteRefreshExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "market-maker-quote-refresh");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile boolean refreshLoopStarted = false;
+
+    @Value("${marketmaker.quote-refresh-interval-ms:1000}")
+    private long quoteRefreshIntervalMs;
 
     public MarketMaker(SnapshotTracker positionTracker, QuoteGenerator quoteGenerator) {
         this.positionTracker = positionTracker;
@@ -39,6 +53,7 @@ public class MarketMaker implements ApplicationRunner {
         if (!positionTracker.handlesSymbol(snapshot.position().symbol()) || !newVersion(snapshot.position())) {
             return;
         }
+        latestPositionBySymbol.put(snapshot.position().symbol(), snapshot.position());
         quoteGenerator.generateQuote(snapshot.position(), snapshot.fill());
     }
 
@@ -95,6 +110,7 @@ public class MarketMaker implements ApplicationRunner {
         boolean removed = positionTracker.removeSymbol(symbol);
         if (removed) {
             lastProcessedVersionBySymbol.remove(symbol);
+            latestPositionBySymbol.remove(symbol);
         }
         return removed;
     }
@@ -119,5 +135,29 @@ public class MarketMaker implements ApplicationRunner {
                     }
                 },
                 err -> log.error("position subscription terminated", err));
+        startQuoteRefreshLoop();
+    }
+
+    private void startQuoteRefreshLoop() {
+        if (refreshLoopStarted) {
+            return;
+        }
+        refreshLoopStarted = true;
+        long intervalMs = Math.max(250L, quoteRefreshIntervalMs);
+        quoteRefreshExecutor.scheduleWithFixedDelay(() -> {
+            for (String symbol : positionTracker.handledSymbols()) {
+                Position latest = latestPositionBySymbol.get(symbol);
+                if (latest == null) {
+                    continue;
+                }
+                try {
+                    // Periodic refresh is based on current position only; no new
+                    // fill-specific skew should be applied when replaying.
+                    quoteGenerator.generateQuote(latest, null);
+                } catch (Exception e) {
+                    log.debug("periodic quote refresh failed for {}: {}", symbol, e.toString());
+                }
+            }
+        }, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
     }
 }
