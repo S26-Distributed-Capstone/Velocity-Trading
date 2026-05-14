@@ -9,10 +9,8 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 import java.time.Duration;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,9 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li><b>Case 5</b>: After reservation but before publishing the quote, the
  *       MM crashes — the leaked reservation is bounded by the quote TTL,
  *       and the global exposure number stays under {@code totalCapacity}.</li>
- *   <li><b>Case 6</b>: Reservation service goes down — exchange-side quotes
- *       can no longer be refreshed, and the existing quoteId stops rotating
- *       until the service comes back.</li>
+ *   <li><b>Case 6</b>: Reservation service crashes before processing a
+ *       reservation request — the market maker must not publish the newly
+ *       generated quote, so the old exchange-side quote remains active.</li>
  *   <li><b>Case 7</b>: Exchange goes down — fresh MM-generated quotes can't
  *       be persisted, but once the exchange returns, market-makers republish
  *       on their next refresh cycle.</li>
@@ -213,54 +211,53 @@ class UpdatingQuoteErrorsTest {
     // --- Error Case 6: Reservation service goes down ---
 
     /**
-     * With exposure-reservation stopped, market-makers can't get fresh
-     * reservations and therefore can't publish new quotes. The exchange's
-     * existing quoteId for a symbol must stop rotating until the reservation
-     * service is restored.
+     * Mirrors docs/error-cases.md case 6 exactly:
+     * trading-state emits a position update, the market maker generates a new
+     * quote, but exposure-reservation has crashed before it can process the
+     * reservation request. Since no reservation is granted, the market maker
+     * must not publish the new quote and the old exchange quote remains.
      */
     @Test
-    void reservationServiceDownFreezesQuoteIdRotationUntilRestart() throws Exception {
-        // Snapshot a stable pre-fault quoteId for AAPL.
-        UUID before = ErrorsITSupport.currentExchangeQuoteId("AAPL");
-        assertNotNull(before, "AAPL must have an active quote before the test");
+    void reservationServiceCrashBeforeProcessingPreventsQuoteUpdateUntilRestart() throws Exception {
+        String symbol = "AAPL";
+        UUID beforeCrash = awaitQuoteId(symbol, Duration.ofSeconds(30));
+        assertNotNull(beforeCrash, symbol + " must have an active quote before the test");
 
-        ErrorsITSupport.stop("exposure-reservation");
+        // The reservation service crashes before the position update that will
+        // make the MM generate a replacement quote and request a reservation.
+        ErrorsITSupport.kill("exposure-reservation");
         ErrorsITSupport.awaitCondition(Duration.ofSeconds(30),
                 () -> !ErrorsITSupport.healthy(ErrorsITSupport.EXPOSURE_RES_PORT),
-                "exposure-reservation did not become unhealthy after stop");
+                "exposure-reservation did not become unhealthy after crash");
+        UUID oldQuote = ErrorsITSupport.currentExchangeQuoteId(symbol);
+        assertNotNull(oldQuote,
+                "old quote must remain visible after exposure-reservation crashes");
 
-        // Drive enough position updates for any working MM to *try* to refresh.
-        // Without a reservation service, none of those refreshes can publish
-        // a fresh quote, so the AAPL quoteId must not change for the duration
-        // of the outage. We sample a few times to catch in-flight rotations.
-        Set<UUID> idsSeenDuringOutage = new HashSet<>();
-        idsSeenDuringOutage.add(before);
-        for (int i = 0; i < 5; i++) {
-            ErrorsITSupport.submitOrders(List.of("AAPL"), 5);
-            UUID now = ErrorsITSupport.currentExchangeQuoteId("AAPL");
-            if (now != null) idsSeenDuringOutage.add(now);
+        assertTrue(ErrorsITSupport.submitSyntheticFill(symbol),
+                "trading-state did not accept the position update for " + symbol);
+
+        // Give the owning MM time to receive the position update, generate the
+        // replacement quote, and fail its reservation request. The exchange
+        // quoteId must remain exactly the old quoteId: no reservation was
+        // granted, so no new quote may become active.
+        for (int i = 0; i < 8; i++) {
             Thread.sleep(1000);
+            assertEquals(oldQuote, ErrorsITSupport.currentExchangeQuoteId(symbol),
+                    "market maker published a quote without a granted reservation");
         }
-        // We don't assert exactly one id, because a refresh that started
-        // before the kill may still have landed with the pre-existing
-        // reservation. We *do* assert there was no proliferation of fresh
-        // quote ids — at most one transition.
-        assertTrue(idsSeenDuringOutage.size() <= 2,
-                "without exposure-reservation, MMs must not generate a stream of fresh quote ids: "
-                        + idsSeenDuringOutage);
 
         ErrorsITSupport.start("exposure-reservation");
         ErrorsITSupport.awaitHealthy("exposure-reservation",
                 ErrorsITSupport.EXPOSURE_RES_PORT, Duration.ofMinutes(2));
 
-        // After restart MMs must be able to publish fresh quotes again.
-        // Drive deterministic position updates directly into trading-state so
-        // this check does not depend on exchange-side matching depth.
+        // Case 6 recovery: once reservation is available again, the MM retries
+        // on the next position update / refresh cycle and can publish a fresh
+        // reserved quote.
         ErrorsITSupport.awaitCondition(Duration.ofMinutes(2), () -> {
-            ErrorsITSupport.submitSyntheticFill("AAPL");
-            UUID after = ErrorsITSupport.currentExchangeQuoteId("AAPL");
-            return after != null && !idsSeenDuringOutage.contains(after);
-        }, "AAPL quoteId did not rotate after exposure-reservation came back");
+            ErrorsITSupport.submitSyntheticFill(symbol);
+            UUID after = ErrorsITSupport.currentExchangeQuoteId(symbol);
+            return after != null && !after.equals(oldQuote);
+        }, symbol + " quoteId did not rotate after exposure-reservation came back");
     }
 
     // --- Error Case 7: Exchange goes down before the new quote is updated ---
