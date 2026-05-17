@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import edu.yu.marketmaker.ha.LeaderElectionService;
+import edu.yu.marketmaker.ha.ServiceRegistry;
 
 /**
  * Trading state service controls system-wide positions.
@@ -45,6 +46,7 @@ public class TradingStateService {
     private final Repository<String, Position> positionRepository;
     private final Repository<UUID, Fill> fillRepository;
     private final LeaderElectionService leaderElection;
+    private final ServiceRegistry serviceRegistry;
     private final ObjectProvider<SimpMessagingTemplate> messagingProvider;
     private final RestClient exchangeClient;
     private volatile Disposable bridgeSubscription;
@@ -68,11 +70,13 @@ public class TradingStateService {
 public TradingStateService(Repository<String, Position> positionRepository,
                            Repository<UUID, Fill> fillRepository,
                            LeaderElectionService leaderElection,
+                           ServiceRegistry serviceRegistry,
                            ObjectProvider<SimpMessagingTemplate> messagingProvider,
                            @Value("${exchange.base-url:http://exchange:8080}") String exchangeBaseUrl) {
     this.positionRepository = positionRepository;
     this.fillRepository = fillRepository;
     this.leaderElection = leaderElection;
+    this.serviceRegistry = serviceRegistry;
     this.messagingProvider = messagingProvider;
     this.exchangeClient = RestClient.builder().baseUrl(exchangeBaseUrl).build();
 }
@@ -317,11 +321,17 @@ public Flux<StateSnapshot> streamPositions() {
     }
 
     /**
-     * HTTP: return the current leader's advertised hostname.
-     * Used by the UI and non-leader replicas to discover where to connect.
+     * HTTP: return the current trading-state leader's advertised hostname.
+     * Sourced from {@link ServiceRegistry}'s ZK-backed cache so any replica
+     * (leader or standby) returns the same answer.
      */
     @GetMapping("/leader-info")
-    Map<String, String> getLeaderInfo(LeaderInfo leaderInfo) {
-        return Map.of("leaderHost", leaderInfo.getLeaderHost());
+    Map<String, String> getLeaderInfo() {
+        return serviceRegistry.getLeaderAddress("trading-state")
+                .map(ep -> Map.of(
+                        "leaderHost", ep.host,
+                        "httpPort", String.valueOf(ep.httpPort),
+                        "rsocketPort", String.valueOf(ep.rsocketPort)))
+                .orElse(Map.of("leaderHost", ""));
     }
 }
