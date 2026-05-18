@@ -22,6 +22,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
@@ -35,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Shared compose-stack orchestration and HTTP helpers for the
+ * Shared orchestration and HTTP helpers for the
  * {@code edu.yu.marketmaker.errors} integration tests.
  * <p>
  * Mirrors the boot sequence used by
@@ -48,20 +49,46 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>
  * This class is a stateless utility: every method is static. Callers invoke
  * {@link #bootStack(String)} from {@code @BeforeAll} and {@link #teardownStack(String)}
- * from {@code @AfterAll}. Crash injection is implemented as docker compose
- * {@code kill}/{@code stop}/{@code start}/{@code up} on individual services.
+ * from {@code @AfterAll}. Runtime mode is selected by
+ * {@code -Derrors.it.runtime=docker|k8s} (default: docker). In k8s mode it
+ * mirrors {@link edu.yu.marketmaker.cluster.ClusterIntegrationWithSystemK8sTest}
+ * and targets the NodePorts defined in {@code k8s/*.yaml}.
  */
 final class ErrorsITSupport {
 
+    private enum RuntimeMode {
+        DOCKER,
+        K8S;
+
+        static RuntimeMode fromProperty() {
+            String raw = System.getProperty("errors.it.runtime", "docker")
+                    .trim()
+                    .toLowerCase(Locale.ROOT);
+            return switch (raw) {
+                case "k8s", "cluster", "kubernetes" -> K8S;
+                default -> DOCKER;
+            };
+        }
+    }
+
     private static final int MM_NODES = boundedIntProperty("it.mm.nodes", 3, 1, 7);
     private static final int HA_REPLICAS = boundedIntProperty("it.ha.replicas", 1, 1, 3);
+    private static final RuntimeMode RUNTIME_MODE = RuntimeMode.fromProperty();
+    private static final String HOST = RUNTIME_MODE == RuntimeMode.K8S
+            ? System.getProperty("errors.k8s.host", System.getProperty("cluster.k8s.host", "localhost"))
+            : "localhost";
+    private static final String NS = System.getProperty("cluster.k8s.namespace", "market-maker");
+    private static final String KUBECTL = System.getProperty("kubectl", "kubectl");
 
-    /** Host port -> compose service name, for the 7 MM nodes. */
+    /** Host port -> service/pod name for MM nodes in the active runtime mode. */
     static final SortedMap<Integer, String> MM_PORT_TO_SERVICE;
     static {
         SortedMap<Integer, String> m = new TreeMap<>();
+        int basePort = RUNTIME_MODE == RuntimeMode.K8S ? 30081 : 8081;
         for (int i = 1; i <= MM_NODES; i++) {
-            m.put(8080 + i, "market-maker-node-" + i);
+            int idx = i - 1;
+            String name = RUNTIME_MODE == RuntimeMode.K8S ? "mm-" + idx : "market-maker-node-" + i;
+            m.put(basePort + idx, name);
         }
         MM_PORT_TO_SERVICE = Collections.unmodifiableSortedMap(m);
     }
@@ -69,10 +96,10 @@ final class ErrorsITSupport {
     static final Set<String> SEED_SYMBOLS = Collections.unmodifiableSet(
             new TreeSet<>(List.of("AAPL", "MSFT", "GOOG", "TSLA", "NVDA", "AMZN", "META")));
 
-    static final int TRADING_STATE_PORT = 18080;
-    static final int EXCHANGE_PORT = 18081;
-    static final int EXPOSURE_RES_PORT = 18082;
-    static final int PUBLISHER_PORT = 18083;
+    static final int TRADING_STATE_PORT = RUNTIME_MODE == RuntimeMode.K8S ? 30180 : 18080;
+    static final int EXCHANGE_PORT = RUNTIME_MODE == RuntimeMode.K8S ? 30181 : 18081;
+    static final int EXPOSURE_RES_PORT = RUNTIME_MODE == RuntimeMode.K8S ? 30182 : 18082;
+    static final int PUBLISHER_PORT = RUNTIME_MODE == RuntimeMode.K8S ? 30183 : 18083;
 
     static final ObjectMapper JSON = new ObjectMapper();
     static final HttpClient HTTP = HttpClient.newBuilder()
@@ -94,7 +121,7 @@ final class ErrorsITSupport {
 
     private ErrorsITSupport() {}
 
-    // ---------- compose lifecycle ----------
+    // ---------- lifecycle ----------
 
     /**
      * Build the image, then bring up the full stack and wait for every service
@@ -104,6 +131,11 @@ final class ErrorsITSupport {
      * case exercises.
      */
     static void bootStack(String tag) throws Exception {
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            bootK8sStack(tag);
+            return;
+        }
+
         System.out.println("[" + tag + "] cleaning any prior stack...");
         runDocker(null, TimeUnit.MINUTES.toMillis(3),
                 "compose", "down", "-v", "--remove-orphans");
@@ -161,6 +193,10 @@ final class ErrorsITSupport {
 
     /** Tear down the entire stack, including volumes. */
     static void teardownStack(String tag) throws Exception {
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            System.out.println("[" + tag + "] k8s mode: leaving cluster running (no teardown).");
+            return;
+        }
         System.out.println("[" + tag + "] docker compose down -v");
         runDocker(null, TimeUnit.MINUTES.toMillis(2), "compose", "down", "-v");
     }
@@ -169,6 +205,10 @@ final class ErrorsITSupport {
 
     /** Kill {@code service} with SIGKILL — simulates a hard crash. */
     static void kill(String service) throws Exception {
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            killK8s(service);
+            return;
+        }
         List<String> targets = resolveComposeTargets(service);
         int rc = runDocker(productionEnv(), TimeUnit.MINUTES.toMillis(1),
                 concat(new String[]{"compose", "kill", "-s", "SIGKILL"}, targets));
@@ -177,6 +217,10 @@ final class ErrorsITSupport {
 
     /** Stop {@code service} gracefully (SIGTERM, then SIGKILL after timeout). */
     static void stop(String service) throws Exception {
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            stopK8s(service);
+            return;
+        }
         List<String> targets = resolveComposeTargets(service);
         int rc = runDocker(productionEnv(), TimeUnit.MINUTES.toMillis(1),
                 concat(new String[]{"compose", "stop", "-t", "5"}, targets));
@@ -188,6 +232,10 @@ final class ErrorsITSupport {
      * container if it was killed and waits for the depends_on chain.
      */
     static void start(String service) throws Exception {
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            startK8s(service);
+            return;
+        }
         List<String> targets = resolveComposeTargets(service);
         int rc = runDocker(productionEnv(), TimeUnit.MINUTES.toMillis(3),
                 concat(new String[]{"compose", "up", "-d"}, targets));
@@ -198,15 +246,27 @@ final class ErrorsITSupport {
 
     /** Block until {@code GET /health} on {@code port} returns 200, else fail loudly. */
     static void awaitHealthy(String serviceName, int port, Duration timeout) throws Exception {
+        awaitHealthy(serviceName, port, "/health", timeout);
+    }
+
+    static void awaitHealthy(String serviceName, int port, String path, Duration timeout) throws Exception {
         Instant deadline = Instant.now().plus(timeout);
         while (Instant.now().isBefore(deadline)) {
-            if (healthy(port)) {
+            if (healthy(port, path)) {
                 System.out.println("[ErrorsIT] " + serviceName + " healthy on port " + port);
                 return;
             }
             Thread.sleep(2000);
         }
-        System.err.println("[ErrorsIT] " + serviceName + " did not respond on /health within " + timeout);
+
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            System.err.println("[ErrorsIT] " + serviceName + " did not respond on " + path
+                    + " within " + timeout + " (host=" + HOST + ")");
+            dumpK8sDiagnostics(serviceName);
+            throw new AssertionError(serviceName + " not healthy within " + timeout);
+        }
+
+        System.err.println("[ErrorsIT] " + serviceName + " did not respond on " + path + " within " + timeout);
         List<String> targets = resolveComposeTargets(serviceName);
         System.err.println("---- docker compose ps " + String.join(" ", targets) + " ----");
         System.err.println(runDockerCapturing(productionEnv(), TimeUnit.SECONDS.toMillis(30),
@@ -219,9 +279,13 @@ final class ErrorsITSupport {
     }
 
     static boolean healthy(int port) {
+        return healthy(port, "/health");
+    }
+
+    static boolean healthy(int port, String path) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + port + "/health"))
+                    .uri(endpointUri(port, path))
                     .timeout(Duration.ofSeconds(3))
                     .GET().build();
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -270,7 +334,7 @@ final class ErrorsITSupport {
     static JsonNode clusterStatusOrNull(int port) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + port + "/cluster/status"))
+                    .uri(endpointUri(port, "/cluster/status"))
                     .timeout(Duration.ofSeconds(3))
                     .GET().build();
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -295,7 +359,7 @@ final class ErrorsITSupport {
     static JsonNode mmStatusOrNull(int port) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + port + "/marketmaker/status"))
+                    .uri(endpointUri(port, "/marketmaker/status"))
                     .timeout(Duration.ofSeconds(3))
                     .GET().build();
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -346,7 +410,7 @@ final class ErrorsITSupport {
     private static HttpResponse<String> postSeedQuotes(List<String> symbols) throws IOException, InterruptedException {
         String body = JSON.writeValueAsString(symbols);
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + PUBLISHER_PORT + "/publisher/seed-quotes"))
+                .uri(endpointUri(PUBLISHER_PORT, "/publisher/seed-quotes"))
                 .header("Content-Type", "application/json")
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
@@ -363,8 +427,7 @@ final class ErrorsITSupport {
     static int submitOrders(List<String> symbols, int count) throws Exception {
         String body = JSON.writeValueAsString(symbols);
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + PUBLISHER_PORT
-                        + "/publisher/submit-orders?count=" + count))
+                .uri(endpointUri(PUBLISHER_PORT, "/publisher/submit-orders?count=" + count))
                 .header("Content-Type", "application/json")
                 .timeout(Duration.ofSeconds(60))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
@@ -401,7 +464,7 @@ final class ErrorsITSupport {
                     "side", side
             );
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + EXCHANGE_PORT + "/orders"))
+                    .uri(endpointUri(EXCHANGE_PORT, "/orders"))
                     .header("Content-Type", "application/json")
                     .timeout(Duration.ofSeconds(5))
                     .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
@@ -410,6 +473,23 @@ final class ErrorsITSupport {
         } catch (Exception e) {
             return -1;
         }
+    }
+
+    /**
+     * Docker can stop any non-leader container. In k8s mode the deterministic
+     * way to keep exactly one StatefulSet pod down is to scale away the highest
+     * ordinal, so the caller must use that node as the crash victim.
+     */
+    static int crashVictimPort(int leaderPort) {
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            return MM_PORT_TO_SERVICE.lastKey();
+        }
+        return MM_PORT_TO_SERVICE.keySet().stream()
+                .filter(port -> port != leaderPort)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no non-leader MM node available (leaderPort=" + leaderPort
+                                + ", totalNodes=" + MM_PORT_TO_SERVICE.size() + ")"));
     }
 
     /**
@@ -431,7 +511,7 @@ final class ErrorsITSupport {
                     "createdAt", System.currentTimeMillis()
             );
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + TRADING_STATE_PORT + "/state/fills"))
+                    .uri(endpointUri(TRADING_STATE_PORT, "/state/fills"))
                     .header("Content-Type", "application/json")
                     .timeout(Duration.ofSeconds(5))
                     .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
@@ -445,7 +525,7 @@ final class ErrorsITSupport {
     /** Every fill currently recorded by trading-state. */
     static List<Fill> getAllFills() throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + TRADING_STATE_PORT + "/state/fills"))
+                .uri(endpointUri(TRADING_STATE_PORT, "/state/fills"))
                 .timeout(Duration.ofSeconds(10))
                 .GET().build();
         HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -460,7 +540,7 @@ final class ErrorsITSupport {
     static long getNetPositionOrZero(String symbol) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + TRADING_STATE_PORT + "/positions/" + symbol))
+                    .uri(endpointUri(TRADING_STATE_PORT, "/positions/" + symbol))
                     .timeout(Duration.ofSeconds(3))
                     .GET().build();
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -478,7 +558,7 @@ final class ErrorsITSupport {
     static UUID currentExchangeQuoteId(String symbol) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + EXCHANGE_PORT + "/quotes/" + symbol))
+                    .uri(endpointUri(EXCHANGE_PORT, "/quotes/" + symbol))
                     .timeout(Duration.ofSeconds(3))
                     .GET().build();
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -495,7 +575,7 @@ final class ErrorsITSupport {
     static JsonNode getExposureOrNull() {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + EXPOSURE_RES_PORT + "/exposure"))
+                    .uri(endpointUri(EXPOSURE_RES_PORT, "/exposure"))
                     .timeout(Duration.ofSeconds(3))
                     .GET().build();
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
@@ -569,6 +649,90 @@ final class ErrorsITSupport {
         throw new AssertionError(failureMessage);
     }
 
+    private static URI endpointUri(int port, String path) {
+        return URI.create("http://" + HOST + ":" + port + path);
+    }
+
+    private static void bootK8sStack(String tag) throws Exception {
+        System.out.println("[" + tag + "] runtime=k8s host=" + HOST + " namespace=" + NS);
+        awaitHealthy("trading-state", TRADING_STATE_PORT, Duration.ofMinutes(5));
+        awaitHealthy("exposure-reservation", EXPOSURE_RES_PORT, Duration.ofMinutes(5));
+        awaitHealthy("exchange", EXCHANGE_PORT, Duration.ofMinutes(5));
+        awaitHealthy("external-publisher", PUBLISHER_PORT, Duration.ofMinutes(5));
+        for (Map.Entry<Integer, String> mm : MM_PORT_TO_SERVICE.entrySet()) {
+            awaitHealthy(mm.getValue(), mm.getKey(), "/marketmaker/status", Duration.ofMinutes(5));
+        }
+        System.out.println("[" + tag + "] waiting for " + MM_PORT_TO_SERVICE.size() + "-node cluster convergence...");
+        awaitMmClusterConverged(tag, Duration.ofMinutes(4));
+        System.out.println("[" + tag + "] full stack up.");
+    }
+
+    private static void killK8s(String service) throws Exception {
+        if (isMmPod(service)) {
+            assertHighestOrdinalMm(service);
+            int rc = runKubectl(TimeUnit.MINUTES.toMillis(2),
+                    "scale", "statefulset", "mm",
+                    "--replicas=" + Math.max(0, MM_NODES - 1), "-n", NS);
+            assertEquals(0, rc, "kubectl scale down failed for " + service);
+            return;
+        }
+        stopK8s(service);
+    }
+
+    private static void stopK8s(String service) throws Exception {
+        WorkloadRef workload = k8sWorkload(service);
+        int rc = runKubectl(TimeUnit.MINUTES.toMillis(1),
+                "scale", workload.kind(), workload.name(), "--replicas=0", "-n", NS);
+        assertEquals(0, rc, "kubectl scale to 0 failed for " + service);
+    }
+
+    private static void startK8s(String service) throws Exception {
+        if (isMmPod(service)) {
+            int rc = runKubectl(TimeUnit.MINUTES.toMillis(2),
+                    "scale", "statefulset", "mm", "--replicas=" + MM_NODES, "-n", NS);
+            assertEquals(0, rc, "kubectl scale up failed for " + service);
+            return;
+        }
+        WorkloadRef workload = k8sWorkload(service);
+        int rc = runKubectl(TimeUnit.MINUTES.toMillis(2),
+                "scale", workload.kind(), workload.name(),
+                "--replicas=" + k8sDesiredReplicas(service), "-n", NS);
+        assertEquals(0, rc, "kubectl scale up failed for " + service);
+    }
+
+    private record WorkloadRef(String kind, String name) {}
+
+    private static WorkloadRef k8sWorkload(String service) {
+        return switch (service) {
+            case "trading-state" -> new WorkloadRef("statefulset", "trading-state");
+            case "exchange" -> new WorkloadRef("statefulset", "exchange");
+            case "exposure-reservation" -> new WorkloadRef("statefulset", "exposure-reservation");
+            case "external-publisher" -> new WorkloadRef("deployment", "external-publisher");
+            default -> throw new IllegalArgumentException("Unsupported k8s service: " + service);
+        };
+    }
+
+    private static int k8sDesiredReplicas(String service) {
+        return switch (service) {
+            case "trading-state", "exchange", "exposure-reservation" -> HA_REPLICAS;
+            case "external-publisher" -> 1;
+            default -> throw new IllegalArgumentException("Unsupported k8s service: " + service);
+        };
+    }
+
+    private static boolean isMmPod(String service) {
+        return service != null && service.startsWith("mm-");
+    }
+
+    private static void assertHighestOrdinalMm(String service) {
+        String expected = "mm-" + (MM_NODES - 1);
+        if (!expected.equals(service)) {
+            throw new IllegalArgumentException(
+                    "k8s MM crash tests can keep only the highest StatefulSet ordinal down; "
+                            + "expected " + expected + " but got " + service);
+        }
+    }
+
     static int runDocker(Map<String, String> env, long timeoutMs, String... args) throws Exception {
         List<String> cmd = new ArrayList<>();
         cmd.add("docker");
@@ -580,6 +744,22 @@ final class ErrorsITSupport {
         if (env != null) {
             pb.environment().putAll(env);
         }
+        Process p = pb.start();
+        if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+            p.destroyForcibly();
+            throw new AssertionError("timeout running: " + String.join(" ", cmd));
+        }
+        return p.exitValue();
+    }
+
+    private static int runKubectl(long timeoutMs, String... args) throws Exception {
+        List<String> cmd = new ArrayList<>();
+        cmd.add(KUBECTL);
+        Collections.addAll(cmd, args);
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .directory(PROJECT_ROOT.toFile())
+                .redirectErrorStream(true)
+                .inheritIO();
         Process p = pb.start();
         if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
             p.destroyForcibly();
@@ -613,6 +793,28 @@ final class ErrorsITSupport {
         return output.toString();
     }
 
+    private static String runKubectlCapturing(long timeoutMs, String... args) throws Exception {
+        List<String> cmd = new ArrayList<>();
+        cmd.add(KUBECTL);
+        Collections.addAll(cmd, args);
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .directory(PROJECT_ROOT.toFile())
+                .redirectErrorStream(true);
+        Process p = pb.start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                output.append(line).append('\n');
+            }
+        }
+        if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+            p.destroyForcibly();
+            output.append("[timed out waiting for kubectl command]\n");
+        }
+        return output.toString();
+    }
+
     private static Map<String, String> productionEnv() {
         return Map.of("QUOTE_GENERATOR_PROFILE", "production-quote-generator");
     }
@@ -627,6 +829,30 @@ final class ErrorsITSupport {
             out[prefix.length + i] = suffix.get(i);
         }
         return out;
+    }
+
+    private static void dumpK8sDiagnostics(String serviceName) {
+        try {
+            if (isMmPod(serviceName)) {
+                System.err.println("---- kubectl describe pod " + serviceName + " ----");
+                System.err.println(runKubectlCapturing(TimeUnit.SECONDS.toMillis(30),
+                        "describe", "pod", serviceName, "-n", NS));
+                System.err.println("---- kubectl logs --tail=300 pod/" + serviceName + " ----");
+                System.err.println(runKubectlCapturing(TimeUnit.MINUTES.toMillis(1),
+                        "logs", "--tail=300", serviceName, "-n", NS));
+                return;
+            }
+
+            WorkloadRef workload = k8sWorkload(serviceName);
+            System.err.println("---- kubectl describe " + workload.kind() + " " + workload.name() + " ----");
+            System.err.println(runKubectlCapturing(TimeUnit.SECONDS.toMillis(30),
+                    "describe", workload.kind(), workload.name(), "-n", NS));
+            System.err.println("---- kubectl logs --tail=300 " + workload.kind() + "/" + workload.name() + " ----");
+            System.err.println(runKubectlCapturing(TimeUnit.MINUTES.toMillis(1),
+                    "logs", "--tail=300", "-n", NS, workload.kind() + "/" + workload.name()));
+        } catch (Exception e) {
+            System.err.println("[ErrorsIT] failed to collect k8s diagnostics: " + e);
+        }
     }
 
     private static boolean requiredServicesRunning() {
@@ -654,9 +880,15 @@ final class ErrorsITSupport {
         }
 
         System.err.println("[" + tag + "] MM cluster failed to converge within " + timeout);
-        System.err.println("---- docker compose ps ----");
-        System.err.println(runDockerCapturing(productionEnv(), TimeUnit.SECONDS.toMillis(30),
-                "compose", "ps"));
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            System.err.println("---- kubectl get pods -n " + NS + " ----");
+            System.err.println(runKubectlCapturing(TimeUnit.SECONDS.toMillis(30),
+                    "get", "pods", "-n", NS, "-o", "wide"));
+        } else {
+            System.err.println("---- docker compose ps ----");
+            System.err.println(runDockerCapturing(productionEnv(), TimeUnit.SECONDS.toMillis(30),
+                    "compose", "ps"));
+        }
 
         for (Map.Entry<Integer, String> mm : MM_PORT_TO_SERVICE.entrySet()) {
             int port = mm.getKey();
@@ -670,10 +902,18 @@ final class ErrorsITSupport {
             }
         }
 
-        List<String> mmServices = new ArrayList<>(MM_PORT_TO_SERVICE.values());
-        System.err.println("---- docker compose logs --tail 150 market-maker nodes ----");
-        System.err.println(runDockerCapturing(productionEnv(), TimeUnit.MINUTES.toMillis(2),
-                concat(new String[]{"compose", "logs", "--tail", "150"}, mmServices)));
+        if (RUNTIME_MODE == RuntimeMode.K8S) {
+            for (String mm : MM_PORT_TO_SERVICE.values()) {
+                System.err.println("---- kubectl logs --tail=150 pod/" + mm + " ----");
+                System.err.println(runKubectlCapturing(TimeUnit.MINUTES.toMillis(1),
+                        "logs", "--tail=150", mm, "-n", NS));
+            }
+        } else {
+            List<String> mmServices = new ArrayList<>(MM_PORT_TO_SERVICE.values());
+            System.err.println("---- docker compose logs --tail 150 market-maker nodes ----");
+            System.err.println(runDockerCapturing(productionEnv(), TimeUnit.MINUTES.toMillis(2),
+                    concat(new String[]{"compose", "logs", "--tail", "150"}, mmServices)));
+        }
         System.err.println("---- end diagnostics ----");
 
         throw new AssertionError("cluster did not converge within " + timeout);

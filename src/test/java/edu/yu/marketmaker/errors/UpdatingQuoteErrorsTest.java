@@ -38,8 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       on their next refresh cycle.</li>
  * </ul>
  *
- * Opt-in: {@code -Derrors.it=true}, docker required. Boot/teardown mirror
- * {@code ClusterIntegrationWithSystemTest}.
+ * Opt-in: {@code -Derrors.it=true}. Runtime can be selected with
+ * {@code -Derrors.it.runtime=docker|k8s} (default: docker). In k8s mode it
+ * targets the NodePorts used by {@code ClusterIntegrationWithSystemK8sTest}.
  */
 @EnabledIfSystemProperty(named = "errors.it", matches = "true")
 class UpdatingQuoteErrorsTest {
@@ -79,7 +80,7 @@ class UpdatingQuoteErrorsTest {
     // --- Error Case 4: Market maker goes down before handling the position update ---
 
     /**
-     * Kill a non-leader market-maker node. The remaining 6 nodes must
+     * Kill one market-maker node. The remaining 6 nodes must
      * reconverge to a single agreed leader, and the killed node must be
      * evicted from the live members set. This is the documented case-4
      * outcome from the cluster's perspective: a missed position update on
@@ -92,7 +93,7 @@ class UpdatingQuoteErrorsTest {
                         + ErrorsITSupport.MM_PORT_TO_SERVICE.size());
         int leaderPort = ErrorsITSupport.leaderPort();
         assertTrue(leaderPort > 0, "no leader before the test");
-        int victimPort = pickNonLeaderPort(leaderPort);
+        int victimPort = ErrorsITSupport.crashVictimPort(leaderPort);
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
         String observedSymbol = firstAssignedSymbol(victimPort);
         UUID preCrashQuoteId = awaitQuoteId(observedSymbol, Duration.ofSeconds(30));
@@ -125,7 +126,7 @@ class UpdatingQuoteErrorsTest {
                 "this test requires at least 2 MM nodes; got "
                         + ErrorsITSupport.MM_PORT_TO_SERVICE.size());
         int leaderPort = ErrorsITSupport.leaderPort();
-        int victimPort = pickNonLeaderPort(leaderPort);
+        int victimPort = ErrorsITSupport.crashVictimPort(leaderPort);
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
         String observedSymbol = firstAssignedSymbol(victimPort);
         UUID preCrashQuoteId = awaitQuoteId(observedSymbol, Duration.ofSeconds(30));
@@ -187,10 +188,10 @@ class UpdatingQuoteErrorsTest {
         int totalCapacity = before.path("totalCapacity").asInt();
         assertTrue(totalCapacity > 0, "totalCapacity must be > 0: " + before);
 
-        // Kill a non-leader node mid-flight while traffic is producing fills
+        // Kill one node mid-flight while traffic is producing fills
         // (and thus driving the reserve/release cycle on every quote refresh).
         int leaderPort = ErrorsITSupport.leaderPort();
-        int victimPort = pickNonLeaderPort(leaderPort);
+        int victimPort = ErrorsITSupport.crashVictimPort(leaderPort);
         String victimService = ErrorsITSupport.MM_PORT_TO_SERVICE.get(victimPort);
 
         for (int wave = 0; wave < 3; wave++) {
@@ -329,15 +330,6 @@ class UpdatingQuoteErrorsTest {
             return "AAPL";
         }
         return assigned.get(0).asText("AAPL");
-    }
-
-    private static int pickNonLeaderPort(int leaderPort) {
-        return ErrorsITSupport.MM_PORT_TO_SERVICE.keySet().stream()
-                .filter(p -> p != leaderPort)
-                .findFirst()
-                .orElseThrow(() -> new AssertionError(
-                        "no non-leader MM node available (leaderPort=" + leaderPort
-                                + ", totalNodes=" + ErrorsITSupport.MM_PORT_TO_SERVICE.size() + ")"));
     }
 
     private static UUID awaitQuoteId(String symbol, Duration timeout) throws Exception {
