@@ -2,19 +2,38 @@ package edu.yu.marketmaker.state;
 
 import com.hazelcast.core.HazelcastException;
 import edu.yu.marketmaker.memory.Repository;
-import edu.yu.marketmaker.model.*;
-import edu.yu.marketmaker.service.ServiceHealth;
-import edu.yu.marketmaker.ha.LeaderElectionService;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import edu.yu.marketmaker.model.*;
+import edu.yu.marketmaker.service.ServiceHealth;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
-import org.springframework.messaging.handler.annotation.*;
+import org.springframework.messaging.handler.annotation.DestinationVariable;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.messaging.simp.annotation.SubscribeMapping;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.*;
+import org.springframework.web.client.RestClient;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import edu.yu.marketmaker.ha.LeaderElectionService;
+import edu.yu.marketmaker.ha.ServiceRegistry;
 
 /**
  * Trading state service controls system-wide positions.
@@ -29,6 +48,10 @@ public class TradingStateService {
     private final Repository<UUID, Fill> fillRepository;
     private final LeaderElectionService leaderElection;
     private final Map<String, Object> symbolLocks = new ConcurrentHashMap<>();
+    private final ServiceRegistry serviceRegistry;
+    private final ObjectProvider<SimpMessagingTemplate> messagingProvider;
+    private final RestClient exchangeClient;
+    private volatile Disposable bridgeSubscription;
 
 
     /**
@@ -46,13 +69,64 @@ public class TradingStateService {
      * @param positionRepository
      * @param fillRepository
      */
-public TradingStateService(Repository<String, Position> positionRepository,
-                           Repository<UUID, Fill> fillRepository,
-                           LeaderElectionService leaderElection) {
-    this.positionRepository = positionRepository;
-    this.fillRepository = fillRepository;
-    this.leaderElection = leaderElection;
-}
+    public TradingStateService(Repository<String, Position> positionRepository,
+                               Repository<UUID, Fill> fillRepository,
+                               LeaderElectionService leaderElection,
+                               ServiceRegistry serviceRegistry,
+                               ObjectProvider<SimpMessagingTemplate> messagingProvider,
+                               @Value("${exchange.base-url:http://exchange:8080}") String exchangeBaseUrl) {
+        this.positionRepository = positionRepository;
+        this.fillRepository = fillRepository;
+        this.leaderElection = leaderElection;
+        this.serviceRegistry = serviceRegistry;
+        this.messagingProvider = messagingProvider;
+        this.exchangeClient = RestClient.builder().baseUrl(exchangeBaseUrl).build();
+    }
+
+    /**
+     * Bridges the in-memory {@link #positionSink} to the STOMP topic
+     * {@code /topic/positions} so browser UIs can receive live updates.
+     * <p>
+     * Only the leader replica actually publishes. The bridge is (re)started on
+     * leader acquisition and torn down on leader loss, so non-leader replicas
+     * never push state to UI clients even though their sinks would still emit.
+     */
+    @PostConstruct
+    void initWebSocketBridge() {
+        SimpMessagingTemplate messaging = messagingProvider.getIfAvailable();
+        if (messaging == null) {
+            logger.info("No SimpMessagingTemplate present — WebSocket bridge disabled");
+            return;
+        }
+        leaderElection.addListener(new LeaderElectionService.LeadershipListener() {
+            @Override public void onLeaderAcquired() { startBridge(messaging); }
+            @Override public void onLeaderLost()    { stopBridge(); }
+        });
+        if (leaderElection.isLeader()) {
+            startBridge(messaging);
+        }
+    }
+
+    private synchronized void startBridge(SimpMessagingTemplate messaging) {
+        if (bridgeSubscription != null && !bridgeSubscription.isDisposed()) return;
+        logger.info("Starting WebSocket position bridge — /topic/positions");
+        bridgeSubscription = positionSink.asFlux()
+                .publishOn(Schedulers.boundedElastic())
+                .subscribe(
+                        snap -> messaging.convertAndSend("/topic/positions", snap),
+                        err  -> logger.error("WebSocket bridge errored", err));
+    }
+
+    private synchronized void stopBridge() {
+        if (bridgeSubscription != null) {
+            logger.info("Stopping WebSocket position bridge — leader lost");
+            bridgeSubscription.dispose();
+            bridgeSubscription = null;
+        }
+    }
+
+    @PreDestroy
+    void shutdownBridge() { stopBridge(); }
 
     /**
      * HTTP: submit a fill via POST /state/fills
@@ -77,19 +151,19 @@ public TradingStateService(Repository<String, Position> positionRepository,
      * @param fill the fill to record
      * @return {@link Mono} that completes empty on success, or errors on invalid input
      */
-@MessageMapping("state.fills")
-public Mono<Void> submitFillRSocket(@Payload Fill fill) {
-    if (!leaderElection.isLeader()) {
-        logger.warn("Rejecting RSocket fill {} — this replica is not the leader", fill.getId());
-        return Mono.error(new IllegalStateException("not leader"));
+    @MessageMapping("state.fills")
+    public Mono<Void> submitFillRSocket(@Payload Fill fill) {
+        if (!leaderElection.isLeader()) {
+            logger.warn("Rejecting RSocket fill {} — this replica is not the leader", fill.getId());
+            return Mono.error(new IllegalStateException("not leader"));
+        }
+        try {
+            processFill(fill);
+            return Mono.empty();
+        } catch (IllegalArgumentException | HazelcastException e) {
+            return Mono.error(e);
+        }
     }
-    try {
-        processFill(fill);
-        return Mono.empty();
-    } catch (IllegalArgumentException | HazelcastException e) {
-        return Mono.error(e);
-    }
-}
 
     /**
      * Shared logic for both HTTP and RSocket submitFill endpoints.
@@ -183,12 +257,12 @@ public Mono<Void> submitFillRSocket(@Payload Fill fill) {
      *
      * @return a hot {@link Flux} of {@link StateSnapshot} items
      */
-@MessageMapping("state.stream")
-public Flux<StateSnapshot> streamPositions() {
-    if (!leaderElection.isLeader()) {
-        return Flux.error(new IllegalStateException("not leader — reconnect to current leader"));
-    }
-    Flux<StateSnapshot> currentState = Flux.fromIterable(positionRepository.getAll())
+    @MessageMapping("state.stream")
+    public Flux<StateSnapshot> streamPositions() {
+        if (!leaderElection.isLeader()) {
+            return Flux.error(new IllegalStateException("not leader — reconnect to current leader"));
+        }
+        Flux<StateSnapshot> currentState = Flux.fromIterable(positionRepository.getAll())
                 .map(position -> {
                     Fill lastFill = position.lastFillId() != null
                             ? fillRepository.get(position.lastFillId()).orElse(null)
@@ -217,4 +291,54 @@ public Flux<StateSnapshot> streamPositions() {
         return new ServiceHealth(true, 0, "Trading State Service");
     }
 
+    /**
+     * STOMP: served when a browser subscribes to {@code /app/positions.snapshot}.
+     * Returns every current position once so the UI can render its initial table
+     * before live deltas start arriving on {@code /topic/positions}.
+     */
+    @SubscribeMapping("/positions.snapshot")
+    public java.util.List<StateSnapshot> snapshot() {
+        return positionRepository.getAll().stream()
+                .map(p -> new StateSnapshot(
+                        p,
+                        p.lastFillId() != null
+                                ? fillRepository.get(p.lastFillId()).orElse(null)
+                                : null))
+                .toList();
+    }
+
+    /**
+     * HTTP: proxy to the Exchange service so the UI can fetch the latest quote
+     * for a symbol from the same origin (avoids CORS). Refreshed by the UI on
+     * each position update — quote freshness is therefore bounded by fill rate,
+     * not true real-time.
+     */
+    @GetMapping("/quotes/{symbol}")
+    ResponseEntity<Quote> getQuoteProxy(@PathVariable String symbol) {
+        try {
+            Quote quote = exchangeClient.get()
+                    .uri("/quotes/{symbol}", symbol)
+                    .retrieve()
+                    .body(Quote.class);
+            return ResponseEntity.ok(quote);
+        } catch (Exception e) {
+            logger.debug("Quote proxy failed for {}: {}", symbol, e.getMessage());
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * HTTP: return the current trading-state leader's advertised hostname.
+     * Sourced from {@link ServiceRegistry}'s ZK-backed cache so any replica
+     * (leader or standby) returns the same answer.
+     */
+    @GetMapping("/leader-info")
+    Map<String, String> getLeaderInfo() {
+        return serviceRegistry.getLeaderAddress("trading-state")
+                .map(ep -> Map.of(
+                        "leaderHost", ep.host,
+                        "httpPort", String.valueOf(ep.httpPort),
+                        "rsocketPort", String.valueOf(ep.rsocketPort)))
+                .orElse(Map.of("leaderHost", ""));
+    }
 }
