@@ -6,6 +6,7 @@ import edu.yu.marketmaker.model.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Mono;
 
 import java.util.Optional;
@@ -28,30 +29,40 @@ import static org.mockito.Mockito.*;
 class ProductionQuoteGeneratorTest {
 
     private Repository<String, Quote> quoteRepository;
-    private LeaderAwareRSocketClient reservationClient;
+    private LeaderAwareRSocketClient rsocketClient;
     private ProductionQuoteGenerator generator;
 
     private static final int DEFAULT_QTY = 10;
     private static final double TARGET_SPREAD = 0.10;
     private static final double HALF_SPREAD = 0.05;
+    private static final String EXPOSURE_RESERVATION_SERVICE = "exposure-reservation";
 
     @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
         quoteRepository = mock(Repository.class);
-        reservationClient = mock(LeaderAwareRSocketClient.class);
+        rsocketClient = mock(LeaderAwareRSocketClient.class);
         when(quoteRepository.get(anyString())).thenReturn(Optional.empty());
 
-        generator = new ProductionQuoteGenerator(reservationClient, quoteRepository, DEFAULT_QTY, TARGET_SPREAD);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<FaultInjector> emptyProvider = mock(ObjectProvider.class);
+        when(emptyProvider.getIfAvailable()).thenReturn(null);
+        generator = new ProductionQuoteGenerator(rsocketClient, quoteRepository, DEFAULT_QTY, TARGET_SPREAD, emptyProvider);
     }
 
     private void stubReservation(int grantedBid, int grantedAsk) {
         ReservationResponse response = new ReservationResponse(
                 UUID.randomUUID().toString(), ReservationStatus.GRANTED, grantedBid, grantedAsk
         );
-        when(reservationClient.requestResponse(
-                eq("exposure-reservation"), eq("reservations"), any(), eq(ReservationResponse.class)))
-                .thenReturn(Mono.just(response));
+        when(rsocketClient.requestResponse(eq(EXPOSURE_RESERVATION_SERVICE), eq("reservations"),
+                any(), eq(ReservationResponse.class))).thenReturn(Mono.just(response));
+    }
+
+    private ArgumentCaptor<Quote> captureProposed() {
+        ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
+        verify(rsocketClient).requestResponse(eq(EXPOSURE_RESERVATION_SERVICE), eq("reservations"),
+                captor.capture(), eq(ReservationResponse.class));
+        return captor;
     }
 
     private Position flatPosition(String symbol) {
@@ -99,8 +110,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         // After BUY fill: referencePrice = fillPrice - 0.01 * qty
         double expectedRef = fillPrice - 0.01 * fillQty;
         assertEquals(expectedRef - HALF_SPREAD, captor.getValue().bidPrice(), 1e-9);
@@ -125,8 +135,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         double expectedRef = fillPrice + 0.01 * fillQty;
         assertEquals(expectedRef - HALF_SPREAD, captor.getValue().bidPrice(), 1e-9);
         assertEquals(expectedRef + HALF_SPREAD, captor.getValue().askPrice(), 1e-9);
@@ -146,8 +155,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(DEFAULT_QTY - 1, captor.getValue().bidQuantity(), "bidQty should decrease by 1 after SELL");
         assertEquals(DEFAULT_QTY + 2, captor.getValue().askQuantity(), "askQty should increase by 2 after SELL");
     }
@@ -168,8 +176,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(0, captor.getValue().bidQuantity(), "bidQty should not go below zero");
     }
 
@@ -191,8 +198,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         double expectedRef = fillPrice - 0.01 * fillQty;
         assertEquals(expectedRef - HALF_SPREAD, captor.getValue().bidPrice(), 1e-9);
         assertEquals(expectedRef + HALF_SPREAD, captor.getValue().askPrice(), 1e-9);
@@ -212,8 +218,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(DEFAULT_QTY + 2, captor.getValue().bidQuantity(), "bidQty should increase by 2 after BUY");
         assertEquals(DEFAULT_QTY - 1, captor.getValue().askQuantity(), "askQty should decrease by 1 after BUY");
     }
@@ -234,8 +239,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(0, captor.getValue().askQuantity(), "askQty should not go below zero");
     }
 
@@ -256,8 +260,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         double midPrice = (99.0 + 101.0) / 2.0;
         assertEquals(midPrice - HALF_SPREAD, captor.getValue().bidPrice(), 1e-9);
         assertEquals(midPrice + HALF_SPREAD, captor.getValue().askPrice(), 1e-9);
@@ -278,8 +281,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(7, captor.getValue().bidQuantity());
         assertEquals(8, captor.getValue().askQuantity());
     }
@@ -299,8 +301,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(5, captor.getValue().bidQuantity(), "bidQty capped at 100 - 95 = 5");
     }
 
@@ -317,8 +318,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(5, captor.getValue().askQuantity(), "askQty capped at 100 + (-95) = 5");
     }
 
@@ -335,8 +335,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(0, captor.getValue().bidQuantity(), "cannot buy more when at max long position");
     }
 
@@ -353,8 +352,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(0, captor.getValue().askQuantity(), "cannot sell more when at max short position");
     }
 
@@ -373,8 +371,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, fill);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(2, captor.getValue().bidQuantity(), "position cap of 2 overrides skew-adjusted qty of 12");
     }
 
@@ -417,9 +414,8 @@ class ProductionQuoteGeneratorTest {
      */
     @Test
     void throwsWhenReservationServiceReturnsNull() {
-        when(reservationClient.requestResponse(
-                eq("exposure-reservation"), eq("reservations"), any(), eq(ReservationResponse.class)))
-                .thenReturn(Mono.empty());
+        when(rsocketClient.requestResponse(eq(EXPOSURE_RESERVATION_SERVICE), eq("reservations"),
+                any(), eq(ReservationResponse.class))).thenReturn(Mono.empty());
         Position pos = flatPosition("AAPL");
 
         assertThrows(IllegalStateException.class, () -> generator.generateQuote(pos, null));
@@ -440,8 +436,7 @@ class ProductionQuoteGeneratorTest {
         ArgumentCaptor<Quote> captor = ArgumentCaptor.forClass(Quote.class);
         generator.generateQuote(pos, null);
 
-        verify(reservationClient).requestResponse(
-                eq("exposure-reservation"), eq("reservations"), captor.capture(), eq(ReservationResponse.class));
+        captor = captureProposed();
         assertEquals(TARGET_SPREAD, captor.getValue().askPrice() - captor.getValue().bidPrice(), 1e-9);
     }
 
