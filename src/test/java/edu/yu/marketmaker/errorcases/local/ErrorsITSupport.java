@@ -2,12 +2,10 @@ package edu.yu.marketmaker.errorcases.local;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.yu.marketmaker.model.Fill;
 import edu.yu.marketmaker.model.Quote;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -17,7 +15,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -29,30 +26,40 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Shared single-instance docker-compose orchestration and HTTP helpers for the
- * {@code edu.yu.marketmaker.errorcases.local} integration tests.
+ * Shared docker-compose orchestration and HTTP helpers for the
+ * {@code edu.yu.marketmaker.errorcases.local} HA failover tests.
  * <p>
- * Boots the stack defined in {@code src/test/docker/errorcases-compose.yml}:
- * one each of postgres, zookeeper, trading-state, exposure-reservation,
- * exchange and external-publisher. One replica per role means a single
- * {@code docker compose stop <service>} is a genuine outage — which is what
- * the failure scenarios in {@code docs/error-cases.md} describe. (The
- * production {@code compose.yml} is a 3-replica HA stack behind a load
- * balancer, where stopping one replica is simply routed around.)
+ * Boots the production {@code compose.yml} HA core: a 3-node Zookeeper
+ * ensemble, postgres, and three replicas each of trading-state,
+ * exposure-reservation and exchange behind the {@code service-lb} nginx
+ * load balancer, plus the external-publisher. The 7 market-maker nodes are
+ * <em>not</em> started — error cases 1-3 only exercise the
+ * exchange/trading-state path and the publisher seeds quotes directly.
+ * <p>
+ * {@code docs/error-cases.md} was written before the system gained its
+ * 3-replica backup design. With backups in place the relevant scenario is
+ * <em>failover</em>: one replica is killed and the survivors keep the
+ * system running. Crash injection therefore targets a single replica
+ * (e.g. {@code exchange-1}), not a whole tier.
  * <p>
  * This class is a stateless utility: every method is static. Callers invoke
- * {@link #bootStack(String)} from {@code @BeforeAll} and {@link #teardownStack(String)}
- * from {@code @AfterAll}. Crash injection is implemented as docker compose
- * {@code kill}/{@code stop}/{@code start} on individual services.
+ * {@link #bootStack(String)} from {@code @BeforeAll} and
+ * {@link #teardownStack(String)} from {@code @AfterAll}.
  */
 final class ErrorsITSupport {
 
-    /** Compose file path, relative to the project root (the docker working dir). */
-    static final String COMPOSE_FILE = "src/test/docker/errorcases-compose.yml";
+    /** Replicas of each HA role, by compose service name. */
+    static final List<String> TRADING_STATE_REPLICAS =
+            List.of("trading-state-1", "trading-state-2", "trading-state-3");
+    static final List<String> EXCHANGE_REPLICAS =
+            List.of("exchange-1", "exchange-2", "exchange-3");
+    static final List<String> EXPOSURE_RES_REPLICAS =
+            List.of("exposure-reservation-1", "exposure-reservation-2", "exposure-reservation-3");
 
     static final Set<String> SEED_SYMBOLS = Collections.unmodifiableSet(
             new TreeSet<>(List.of("AAPL", "MSFT", "GOOG", "TSLA", "NVDA", "AMZN", "META")));
 
+    // Host ports exposed by the service-lb nginx container (and the publisher).
     static final int TRADING_STATE_PORT = 18080;
     static final int EXCHANGE_PORT = 18081;
     static final int EXPOSURE_RES_PORT = 18082;
@@ -69,36 +76,41 @@ final class ErrorsITSupport {
     // ---------- compose lifecycle ----------
 
     /**
-     * Build the image, then bring up the single-instance stack and wait for
-     * every service to report healthy on {@code /health}.
+     * Build the image, then bring up the HA core (no market-maker nodes) and
+     * wait for every load-balanced role plus the publisher to report healthy.
      */
     static void bootStack(String tag) throws Exception {
         System.out.println("[" + tag + "] cleaning any prior stack...");
         compose(TimeUnit.MINUTES.toMillis(3), "down", "-v", "--remove-orphans");
 
         System.out.println("[" + tag + "] docker compose build (first run may take several minutes)...");
-        int buildRc = compose(TimeUnit.MINUTES.toMillis(20), "build", "trading-state");
+        int buildRc = compose(TimeUnit.MINUTES.toMillis(20), "build", "trading-state-1");
         assertEquals(0, buildRc, "docker compose build failed");
 
-        System.out.println("[" + tag + "] bringing up postgres + zookeeper...");
-        int rcInfra = compose(TimeUnit.MINUTES.toMillis(3), "up", "-d", "postgres", "zookeeper");
-        assertEquals(0, rcInfra, "docker compose up (postgres + zookeeper) failed");
+        System.out.println("[" + tag + "] bringing up zookeeper ensemble + postgres + state/reservation tiers...");
+        List<String> coreUp = new ArrayList<>(List.of("up", "-d",
+                "zookeeper1", "zookeeper2", "zookeeper3", "postgres", "service-lb"));
+        coreUp.addAll(TRADING_STATE_REPLICAS);
+        coreUp.addAll(EXPOSURE_RES_REPLICAS);
+        int rcCore = compose(TimeUnit.MINUTES.toMillis(6), coreUp.toArray(String[]::new));
+        assertEquals(0, rcCore, "docker compose up (core) failed");
 
-        System.out.println("[" + tag + "] bringing up trading-state + exposure-reservation + exchange...");
-        int rcCore = compose(TimeUnit.MINUTES.toMillis(5),
-                "up", "-d", "trading-state", "exposure-reservation", "exchange");
-        assertEquals(0, rcCore, "docker compose up (core services) failed");
+        awaitHealthy("trading-state", TRADING_STATE_PORT, Duration.ofMinutes(5));
+        awaitHealthy("exposure-reservation", EXPOSURE_RES_PORT, Duration.ofMinutes(5));
 
-        awaitHealthy("trading-state", TRADING_STATE_PORT, Duration.ofMinutes(4));
-        awaitHealthy("exposure-reservation", EXPOSURE_RES_PORT, Duration.ofMinutes(4));
-        awaitHealthy("exchange", EXCHANGE_PORT, Duration.ofMinutes(4));
+        System.out.println("[" + tag + "] bringing up exchange tier...");
+        List<String> exchangeUp = new ArrayList<>(List.of("up", "-d"));
+        exchangeUp.addAll(EXCHANGE_REPLICAS);
+        int rcExchange = compose(TimeUnit.MINUTES.toMillis(4), exchangeUp.toArray(String[]::new));
+        assertEquals(0, rcExchange, "docker compose up (exchange) failed");
+        awaitHealthy("exchange", EXCHANGE_PORT, Duration.ofMinutes(5));
 
         System.out.println("[" + tag + "] bringing up external-publisher...");
         int rcPub = compose(TimeUnit.MINUTES.toMillis(3), "up", "-d", "external-publisher");
         assertEquals(0, rcPub, "docker compose up (external-publisher) failed");
         awaitHealthy("external-publisher", PUBLISHER_PORT, Duration.ofMinutes(4));
 
-        System.out.println("[" + tag + "] full stack up.");
+        System.out.println("[" + tag + "] HA core up.");
     }
 
     /** Tear down the entire stack, including volumes. */
@@ -107,27 +119,33 @@ final class ErrorsITSupport {
         compose(TimeUnit.MINUTES.toMillis(2), "down", "-v");
     }
 
-    // ---------- crash injection ----------
+    // ---------- crash injection (single replica) ----------
 
-    /** Kill {@code service} with SIGKILL — simulates a hard crash. */
-    static void kill(String service) throws Exception {
-        int rc = compose(TimeUnit.MINUTES.toMillis(1), "kill", "-s", "SIGKILL", service);
-        assertEquals(0, rc, "docker compose kill failed for " + service);
+    /** Kill one replica with SIGKILL — simulates a hard crash of that node. */
+    static void kill(String replica) throws Exception {
+        int rc = compose(TimeUnit.MINUTES.toMillis(1), "kill", "-s", "SIGKILL", replica);
+        assertEquals(0, rc, "docker compose kill failed for " + replica);
     }
 
-    /** Stop {@code service} gracefully (SIGTERM, then SIGKILL after timeout). */
-    static void stop(String service) throws Exception {
-        int rc = compose(TimeUnit.MINUTES.toMillis(1), "stop", "-t", "5", service);
-        assertEquals(0, rc, "docker compose stop failed for " + service);
+    /** Stop one replica gracefully (SIGTERM, then SIGKILL after a short timeout). */
+    static void stop(String replica) throws Exception {
+        int rc = compose(TimeUnit.MINUTES.toMillis(1), "stop", "-t", "5", replica);
+        assertEquals(0, rc, "docker compose stop failed for " + replica);
     }
 
     /**
-     * Restart {@code service} via {@code compose up -d}, which recreates the
-     * container if it was killed and waits for the depends_on chain.
+     * Restart one replica via {@code compose up -d}, which recreates the
+     * container if it was killed and waits for its depends_on chain.
      */
-    static void start(String service) throws Exception {
-        int rc = compose(TimeUnit.MINUTES.toMillis(3), "up", "-d", service);
-        assertEquals(0, rc, "docker compose up failed for " + service);
+    static void start(String replica) throws Exception {
+        int rc = compose(TimeUnit.MINUTES.toMillis(3), "up", "-d", replica);
+        assertEquals(0, rc, "docker compose up failed for " + replica);
+    }
+
+    /** @return true if {@code replica}'s container is in compose state "running". */
+    static boolean isRunning(String replica) throws Exception {
+        String out = composeCapturing(TimeUnit.SECONDS.toMillis(20), "ps", "--status", "running", replica);
+        return out.contains(replica);
     }
 
     // ---------- health ----------
@@ -162,8 +180,7 @@ final class ErrorsITSupport {
 
     /**
      * PUT a fixed bid=99.50/ask=100.50 quote per symbol via the publisher
-     * service. Returns the bootstrap quoteIds so callers can later distinguish
-     * publisher-issued quotes from those written by market-makers.
+     * service. Returns the bootstrap quoteIds.
      */
     static List<UUID> seedQuotes(List<String> symbols) throws Exception {
         String body = JSON.writeValueAsString(symbols);
@@ -182,63 +199,29 @@ final class ErrorsITSupport {
 
     /**
      * Submit {@code count} orders per {@code symbol} via the publisher.
-     * Returns the number the exchange accepted (HTTP 200); failures are
-     * silently tallied as rejected, which is the correct behaviour when the
-     * exchange is intentionally down for an error case.
+     * Returns the number the exchange accepted (HTTP 200). A transport error
+     * is reported as 0 accepted rather than throwing — during a failover
+     * window some requests legitimately fail before the survivors take over.
      */
-    static int submitOrders(List<String> symbols, int count) throws Exception {
-        String body = JSON.writeValueAsString(symbols);
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:" + PUBLISHER_PORT
-                        + "/publisher/submit-orders?count=" + count))
-                .header("Content-Type", "application/json")
-                .timeout(Duration.ofSeconds(60))
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() != 200) {
-            fail("submit-orders returned " + resp.statusCode() + ": " + resp.body());
-        }
-        return Integer.parseInt(resp.body().trim());
-    }
-
-    /**
-     * Try to submit a single order via the exchange directly, bypassing the
-     * publisher. Returns the HTTP status code, or -1 if the request failed
-     * outright (connection refused / timeout — exchange is down).
-     */
-    static int submitOrderDirectly(String symbol, int quantity, double limitPrice, String side) {
-        return submitOrderDirectlyWithId(symbol, UUID.randomUUID(), quantity, limitPrice, side);
-    }
-
-    /**
-     * Same as {@link #submitOrderDirectly} but with a caller-supplied order
-     * id, so a test can later check whether that id was reflected in any
-     * recorded fill (or, in the case-3 scenario, that it was silently lost).
-     */
-    static int submitOrderDirectlyWithId(String symbol, UUID orderId, int quantity,
-                                         double limitPrice, String side) {
+    static int submitOrders(List<String> symbols, int count) {
         try {
-            java.util.Map<String, Object> body = java.util.Map.of(
-                    "id", orderId.toString(),
-                    "symbol", symbol,
-                    "quantity", quantity,
-                    "limitPrice", limitPrice,
-                    "side", side
-            );
+            String body = JSON.writeValueAsString(symbols);
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + EXCHANGE_PORT + "/orders"))
+                    .uri(URI.create("http://localhost:" + PUBLISHER_PORT
+                            + "/publisher/submit-orders?count=" + count))
                     .header("Content-Type", "application/json")
-                    .timeout(Duration.ofSeconds(5))
-                    .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
+                    .timeout(Duration.ofSeconds(60))
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
-            return HTTP.send(req, HttpResponse.BodyHandlers.ofString()).statusCode();
+            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) return 0;
+            return Integer.parseInt(resp.body().trim());
         } catch (Exception e) {
-            return -1;
+            return 0;
         }
     }
 
-    /** Every fill currently recorded by trading-state. */
+    /** Every fill currently recorded by trading-state (read via the load balancer). */
     static List<Fill> getAllFills() throws Exception {
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:" + TRADING_STATE_PORT + "/state/fills"))
@@ -253,20 +236,18 @@ final class ErrorsITSupport {
                 .readValue(resp.body(), new TypeReference<List<Fill>>() {});
     }
 
-    static long getNetPositionOrZero(String symbol) {
+    /**
+     * Total recorded fill count, or -1 if trading-state is currently
+     * unreachable. Catches {@code Throwable} deliberately: {@link #getAllFills}
+     * signals a non-200 response via JUnit {@code fail()}, which throws an
+     * {@code AssertionError} — that is an expected, tolerable outcome while a
+     * replica is mid-failover, not a test failure.
+     */
+    static int fillCountOrMinusOne() {
         try {
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + TRADING_STATE_PORT + "/positions/" + symbol))
-                    .timeout(Duration.ofSeconds(3))
-                    .GET().build();
-            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) return 0;
-            JsonNode node = JSON.readTree(resp.body());
-            JsonNode pos = node.has("value") ? node.path("value") : node;
-            if (pos.isMissingNode() || pos.isNull()) return 0;
-            return pos.path("netQuantity").asLong(0);
-        } catch (IOException | InterruptedException e) {
-            return 0;
+            return getAllFills().size();
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
@@ -293,34 +274,32 @@ final class ErrorsITSupport {
         return q == null ? null : q.quoteId();
     }
 
-    /** Current exposure-reservation {@code GET /exposure} response, or null on error. */
-    static JsonNode getExposureOrNull() {
+    /**
+     * Best-effort quote seed — swallows transient failures during a failover
+     * window. Catches {@code Throwable} deliberately: {@link #seedQuotes}
+     * signals a non-200 response via JUnit {@code fail()}, which throws an
+     * {@code AssertionError}. While a replica is mid-failover the publisher
+     * may briefly 500; that is expected and tolerable, not a test failure.
+     */
+    static void reseedQuietly() {
         try {
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + EXPOSURE_RES_PORT + "/exposure"))
-                    .timeout(Duration.ofSeconds(3))
-                    .GET().build();
-            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) return null;
-            return JSON.readTree(resp.body());
-        } catch (Exception e) {
-            return null;
+            seedQuotes(new ArrayList<>(SEED_SYMBOLS));
+        } catch (Throwable ignored) {
+            // exchange/publisher may be momentarily unreachable mid-failover
         }
     }
 
     /**
      * Drive enough order traffic for trading-state to record a fill on every
-     * seed symbol. Used as the "system is working" baseline before injecting
-     * a fault.
+     * seed symbol. Used as the "system is healthy" baseline before injecting
+     * a fault. Re-seeds each iteration because quotes carry a 30s TTL.
      */
     static void driveTrafficUntilEverySymbolHasFill(Duration timeout) throws Exception {
-        Set<UUID> ignored = new HashSet<>(seedQuotes(new ArrayList<>(SEED_SYMBOLS)));
         Instant deadline = Instant.now().plus(timeout);
         Set<String> withFills = new TreeSet<>();
         while (Instant.now().isBefore(deadline)) {
+            reseedQuietly();
             submitOrders(new ArrayList<>(SEED_SYMBOLS), 25);
-            // Probe by actual fill existence — a symbol whose BUY and SELL
-            // cancel out has net=0 but does have fills recorded.
             for (Fill f : getAllFills()) {
                 if (SEED_SYMBOLS.contains(f.symbol())) withFills.add(f.symbol());
             }
@@ -328,7 +307,27 @@ final class ErrorsITSupport {
             Thread.sleep(1500);
         }
         throw new AssertionError("baseline traffic did not produce fills for every symbol within "
-                + timeout + "; got=" + withFills + " (bootstrap quoteIds=" + ignored.size() + ")");
+                + timeout + "; got=" + withFills);
+    }
+
+    /**
+     * Keep submitting orders until trading-state records strictly more fills
+     * than {@code baselineFillCount}, proving the order path is alive. Rides
+     * out the brief load-balancer / DNS settling window after a replica is
+     * killed, and re-seeds each iteration to outlast the 30s quote TTL.
+     * Fails if no new fill lands within {@code timeout}.
+     */
+    static void awaitNewFillsAfter(int baselineFillCount, Duration timeout) {
+        Instant deadline = Instant.now().plus(timeout);
+        while (Instant.now().isBefore(deadline)) {
+            reseedQuietly();
+            submitOrders(new ArrayList<>(SEED_SYMBOLS), 10);
+            int now = fillCountOrMinusOne();
+            if (now > baselineFillCount) return;
+            sleepQuietly(2000);
+        }
+        throw new AssertionError("no new fills recorded within " + timeout
+                + " after baseline=" + baselineFillCount + "; failover did not keep the order path alive");
     }
 
     // ---------- generic helpers ----------
@@ -337,19 +336,22 @@ final class ErrorsITSupport {
         Instant deadline = Instant.now().plus(timeout);
         while (Instant.now().isBefore(deadline)) {
             if (condition.getAsBoolean()) return;
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
+            sleepQuietly(1000);
         }
         throw new AssertionError(failureMessage);
     }
 
-    /** Run {@code docker compose -f <errorcases-compose.yml> <args>} from the project root. */
+    static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Run {@code docker compose <args>} (production compose.yml) from the project root. */
     static int compose(long timeoutMs, String... args) throws Exception {
-        List<String> cmd = new ArrayList<>(List.of("docker", "compose", "-f", COMPOSE_FILE));
+        List<String> cmd = new ArrayList<>(List.of("docker", "compose"));
         Collections.addAll(cmd, args);
         ProcessBuilder pb = new ProcessBuilder(cmd)
                 .directory(PROJECT_ROOT.toFile())
@@ -361,5 +363,21 @@ final class ErrorsITSupport {
             throw new AssertionError("timeout running: " + String.join(" ", cmd));
         }
         return p.exitValue();
+    }
+
+    /** Run {@code docker compose <args>} and return its combined stdout/stderr. */
+    static String composeCapturing(long timeoutMs, String... args) throws Exception {
+        List<String> cmd = new ArrayList<>(List.of("docker", "compose"));
+        Collections.addAll(cmd, args);
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .directory(PROJECT_ROOT.toFile())
+                .redirectErrorStream(true);
+        Process p = pb.start();
+        String output = new String(p.getInputStream().readAllBytes());
+        if (!p.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+            p.destroyForcibly();
+            throw new AssertionError("timeout running: " + String.join(" ", cmd));
+        }
+        return output;
     }
 }
