@@ -8,8 +8,10 @@ import org.springframework.web.bind.annotation.*;
  * Test-only REST surface for {@link FaultInjector}. Only registered when the
  * {@code fault-injection} Spring profile is active.
  *
- * <p>Used exclusively by the error-case 10 integration tests
- * ({@code LocalError10MMCrashDuringQuoteReplaceTest} /
+ * <p>Used exclusively by the error-case 5 and error-case 10 integration tests
+ * ({@code LocalError5MMCrashAfterReservationTest} /
+ * {@code ClusterError5MMCrashAfterReservationTest} /
+ * {@code LocalError10MMCrashDuringQuoteReplaceTest} /
  * {@code ClusterError10MMCrashDuringQuoteReplaceTest}). No production code
  * path arms the injector.
  */
@@ -38,10 +40,31 @@ public class FaultInjectionController {
         return ResponseEntity.ok(new ArmedStatus(symbol));
     }
 
-    /** Inspect the currently armed symbol, if any. */
+    /**
+     * Arm the injector to crash this market-maker AFTER the next successful
+     * reservation grant for {@code symbol} but BEFORE the resulting quote
+     * is written to the local quote repository. Reproduces error case 5:
+     * the reservation consumes capacity but no active quote ever exists for
+     * the symbol on this MM.
+     *
+     * <p>Idempotent: re-arming overwrites any prior armed symbol.
+     */
+    @PostMapping("/arm-post-reservation-crash")
+    public ResponseEntity<ArmedStatus> armPostReservationCrash(@RequestParam("symbol") String symbol) {
+        injector.armPostReservationCrash(symbol);
+        return ResponseEntity.ok(new ArmedStatus(symbol));
+    }
+
+    /** Inspect the currently armed quote-replace symbol, if any. */
     @GetMapping("/status")
     public ResponseEntity<ArmedStatus> status() {
         return ResponseEntity.ok(new ArmedStatus(injector.currentlyArmedSymbol()));
+    }
+
+    /** Inspect the currently armed post-reservation symbol, if any. */
+    @GetMapping("/post-reservation-status")
+    public ResponseEntity<ArmedStatus> postReservationStatus() {
+        return ResponseEntity.ok(new ArmedStatus(injector.currentlyArmedPostReservationSymbol()));
     }
 
     public record ArmedStatus(String armedSymbol) {}

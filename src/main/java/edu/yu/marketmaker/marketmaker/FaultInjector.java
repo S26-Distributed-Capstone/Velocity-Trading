@@ -8,27 +8,39 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Test-only fault injector for error case 10 (market maker crashes during
- * the quote replacement cycle, after releasing the old reservation but before
- * acquiring the new one).
+ * Test-only fault injector for error cases 5 and 10.
+ *
+ * <p>Two independent arming slots, each consumed at a different point inside
+ * {@link ProductionQuoteGenerator#generateQuote}:
+ * <ul>
+ *   <li><b>quote-replace</b> ({@link #armQuoteReplaceCrash} /
+ *       {@link #consumeIfArmed}) — fires at the top of generateQuote, before
+ *       any reservation is acquired. {@link ProductionQuoteGenerator} then
+ *       explicitly releases the previous reservation and halts the JVM,
+ *       reproducing error case 10.</li>
+ *   <li><b>post-reservation</b> ({@link #armPostReservationCrash} /
+ *       {@link #consumeIfArmedPostReservation}) — fires after the
+ *       reservation is granted but before the quote is written to the
+ *       repository. The reservation stays in place (no release), reproducing
+ *       error case 5's exposure leak.</li>
+ * </ul>
  *
  * <p>This bean only exists when the {@code fault-injection} Spring profile is
  * active. {@link ProductionQuoteGenerator} consumes it via optional injection;
  * when the profile is absent (the default) the field is {@code null} and the
  * production code path is unaffected.
  *
- * <p>Even with the profile active, the injector is a no-op until something
- * explicitly arms it via {@link FaultInjectionController}. Arming sets a
- * single-shot pending symbol; the next call to {@link #consumeIfArmed(String)}
- * for that symbol returns {@code true} and clears the state, so the crash
- * can only fire once per arm.
+ * <p>Even with the profile active, both slots stay disarmed until an explicit
+ * arm call comes in via {@link FaultInjectionController}. Each slot is
+ * single-shot: a successful consume clears it.
  *
  * <p>Two independent safety gates therefore stand between this code and a
  * production deployment:
  * <ol>
  *   <li>The {@code fault-injection} profile must be in
  *       {@code SPRING_PROFILES_ACTIVE}.</li>
- *   <li>An operator must POST to the arm endpoint with a specific symbol.</li>
+ *   <li>An operator must POST to one of the arm endpoints with a specific
+ *       symbol.</li>
  * </ol>
  */
 @Component
@@ -38,6 +50,7 @@ public class FaultInjector {
     private static final Logger log = LoggerFactory.getLogger(FaultInjector.class);
 
     private final AtomicReference<String> armedSymbol = new AtomicReference<>(null);
+    private final AtomicReference<String> postReservationArmedSymbol = new AtomicReference<>(null);
 
     /**
      * Arm the injector to crash the next time the quote generator processes
@@ -55,13 +68,36 @@ public class FaultInjector {
         }
     }
 
-    /** @return the currently armed symbol, or {@code null} if disarmed. */
+    /**
+     * Arm the injector to crash AFTER the next successful reservation grant
+     * for {@code symbol} but BEFORE the resulting quote is written to the
+     * repository. Reproduces error case 5: reservation capacity is consumed
+     * but the quote never becomes active. Overwrites any prior armed symbol;
+     * passing {@code null} disarms.
+     */
+    public void armPostReservationCrash(String symbol) {
+        String previous = postReservationArmedSymbol.getAndSet(symbol);
+        if (previous != null) {
+            log.warn("[FAULT-INJECTION] re-arm (post-reservation): overwriting previously armed symbol {} with {}",
+                    previous, symbol);
+        } else {
+            log.warn("[FAULT-INJECTION] armed (post-reservation): will crash after next reservation grant for symbol={}",
+                    symbol);
+        }
+    }
+
+    /** @return the currently armed quote-replace symbol, or {@code null} if disarmed. */
     public String currentlyArmedSymbol() {
         return armedSymbol.get();
     }
 
+    /** @return the currently armed post-reservation symbol, or {@code null} if disarmed. */
+    public String currentlyArmedPostReservationSymbol() {
+        return postReservationArmedSymbol.get();
+    }
+
     /**
-     * Consume the armed flag if it matches {@code symbol}.
+     * Consume the quote-replace armed flag if it matches {@code symbol}.
      *
      * <p>Returns {@code true} (and clears the armed state) only when the
      * injector was armed for exactly this symbol. After a successful consume
@@ -69,15 +105,32 @@ public class FaultInjector {
      * — see {@link ProductionQuoteGenerator}.
      */
     public synchronized boolean consumeIfArmed(String symbol) {
+        return consumeIfArmed(armedSymbol, symbol);
+    }
+
+    /**
+     * Consume the post-reservation armed flag if it matches {@code symbol}.
+     *
+     * <p>Returns {@code true} (and clears the armed state) only when the
+     * injector was armed for exactly this symbol. After a successful consume
+     * the caller is expected to halt the JVM WITHOUT releasing the
+     * just-granted reservation — that orphan is the whole point of error
+     * case 5.
+     */
+    public synchronized boolean consumeIfArmedPostReservation(String symbol) {
+        return consumeIfArmed(postReservationArmedSymbol, symbol);
+    }
+
+    // Value comparison, not reference: AtomicReference.compareAndSet uses ==
+    // under the hood, which fails for equal-but-distinct String instances
+    // (the symbol from HTTP query-string vs. the one from a deserialized
+    // Position payload). equals() is what we actually want.
+    private static boolean consumeIfArmed(AtomicReference<String> slot, String symbol) {
         if (symbol == null) {
             return false;
         }
-        // Value comparison, not reference: AtomicReference.compareAndSet
-        // uses == under the hood, which fails for equal-but-distinct String
-        // instances (the symbol from HTTP query-string vs. the one from a
-        // deserialized Position payload). equals() is what we actually want.
-        if (symbol.equals(armedSymbol.get())) {
-            armedSymbol.set(null);
+        if (symbol.equals(slot.get())) {
+            slot.set(null);
             return true;
         }
         return false;
