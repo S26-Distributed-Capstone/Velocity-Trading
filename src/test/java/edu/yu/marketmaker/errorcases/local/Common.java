@@ -105,7 +105,7 @@ public class Common {
         System.out.println("[ERR" + errorCase + "] full stack up.");
     }
 
-    private static int runDocker(Map<String, String> env, long timeoutMs, String... args) throws Exception {
+    public static int runDocker(Map<String, String> env, long timeoutMs, String... args) throws Exception {
         List<String> cmd = new ArrayList<>();
         cmd.add("docker");
         Collections.addAll(cmd, args);

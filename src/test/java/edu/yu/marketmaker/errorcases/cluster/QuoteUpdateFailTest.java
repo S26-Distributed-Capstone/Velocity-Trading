@@ -1,29 +1,15 @@
-package edu.yu.marketmaker.errorcases.local;
+package edu.yu.marketmaker.errorcases.cluster;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import edu.yu.marketmaker.model.Quote;
 import edu.yu.marketmaker.service.FaultInjector;
 
 public class QuoteUpdateFailTest {
-
-    @BeforeAll
-    static void bootStack() throws Exception {
-        Common.bootStack(7);
-    }
-
-    @AfterAll
-    static void teardownStack() throws Exception {
-        System.out.println("[IT] docker compose down -v");
-        Common.runDocker(null, TimeUnit.MINUTES.toMillis(2), "compose", "down", "-v");
-    }
     
     /**
      * Test for error case #7
