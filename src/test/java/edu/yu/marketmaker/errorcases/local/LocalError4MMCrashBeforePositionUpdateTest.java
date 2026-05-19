@@ -80,6 +80,8 @@ class LocalError4MMCrashBeforePositionUpdateTest {
         assertNotNull(preCrashQuoteId, "expected an active quote before crash");
 
         kill(victimService);
+        assertTrue(submitSyntheticFill(observedSymbol),
+                "trading-state did not accept the position update while " + victimService + " was down");
         awaitCondition(Duration.ofMinutes(2),
                 () -> survivorsConverged(
                         victimPort, MM_PORT_TO_SERVICE.size() - 1),
@@ -99,6 +101,8 @@ class LocalError4MMCrashBeforePositionUpdateTest {
                 observedSymbol, Duration.ofSeconds(30));
 
         kill(victimService);
+        assertTrue(submitSyntheticFill(observedSymbol),
+                "trading-state did not accept the position update while " + victimService + " was down");
         awaitCondition(Duration.ofMinutes(2),
                 () -> survivorsConverged(
                         victimPort, MM_PORT_TO_SERVICE.size() - 1),

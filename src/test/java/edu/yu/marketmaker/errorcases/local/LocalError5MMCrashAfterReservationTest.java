@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.yu.marketmaker.model.Fill;
+import edu.yu.marketmaker.model.FreedCapacityResponse;
+import edu.yu.marketmaker.model.Quote;
+import edu.yu.marketmaker.model.ReservationResponse;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -40,10 +43,10 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import java.time.Duration;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Error case 5 local end-to-end: MM failure never over-commits global exposure. */
+/** Error case 5 local end-to-end: reservation granted but quote never published creates a leak until cleanup. */
 @EnabledIfSystemProperty(named = "cluster.it", matches = "true")
 class LocalError5MMCrashAfterReservationTest {
 
@@ -66,24 +69,53 @@ class LocalError5MMCrashAfterReservationTest {
     }
 
     @Test
-    void killedMarketMakerNeverPushesExposureOverCapacity() throws Exception {
+    void orphanedReservationConsumesCapacityUntilReleased() throws Exception {
         ExposureState before = awaitExposure(Duration.ofSeconds(30));
-        assertNotNull(before, "exposure must be reachable before fault injection");
         assertTrue(before.totalCapacity() > 0, "totalCapacity must be > 0");
 
-        int leaderPort = leaderPort();
-        int victimPort = crashVictimPort(leaderPort);
-        String victimService = MM_PORT_TO_SERVICE.get(victimPort);
+        int requestedBid = before.bidUsage() < before.totalCapacity() ? 1 : 0;
+        int requestedAsk = before.askUsage() < before.totalCapacity() ? 1 : 0;
+        assertTrue(requestedBid > 0 || requestedAsk > 0,
+                "error case 5 needs at least one free exposure slot to create an orphaned reservation: " + before);
 
-        for (int wave = 0; wave < 3; wave++) {
-            submitOrders(List.of("AAPL", "GOOG", "MSFT"), 5);
-            if (wave == 1) kill(victimService);
-            ExposureState now = awaitExposure(Duration.ofSeconds(30));
-            assertTrue(now.bidUsage() <= before.totalCapacity(),
-                    "bidUsage exceeded totalCapacity: " + now);
-            assertTrue(now.askUsage() <= before.totalCapacity(),
-                    "askUsage exceeded totalCapacity: " + now);
-            Thread.sleep(2000);
+        String orphanSymbol = "ERR5-" + UUID.randomUUID();
+        assertNull(currentExchangeQuoteId(orphanSymbol),
+                "test symbol must start without an active exchange quote");
+
+        ReservationResponse reservation = null;
+        try {
+            Quote unpublishedQuote = new Quote(orphanSymbol, 99.95, requestedBid,
+                    100.05, requestedAsk, UUID.randomUUID(), System.currentTimeMillis() + 30_000);
+            reservation = createReservation(unpublishedQuote);
+            int grantedBid = reservation.grantedBidQuantity();
+            int grantedAsk = reservation.grantedAskQuantity();
+            assertTrue(grantedBid > 0 || grantedAsk > 0,
+                    "reservation service must grant capacity for the orphaned quote: " + reservation);
+
+            final int expectedBid = before.bidUsage() + grantedBid;
+            final int expectedAsk = before.askUsage() + grantedAsk;
+            awaitCondition(Duration.ofSeconds(10), () -> {
+                ExposureState leaked = currentExposure();
+                return leaked != null
+                        && leaked.bidUsage() == expectedBid
+                        && leaked.askUsage() == expectedAsk
+                        && leaked.activeReservations() == before.activeReservations() + 1;
+            }, "orphaned reservation did not consume exposure capacity");
+            assertNull(currentExchangeQuoteId(orphanSymbol),
+                    "reservation was granted but the quote should not be active because it was never published");
+
+            FreedCapacityResponse freed = releaseReservation(orphanSymbol);
+            assertEquals(grantedBid + grantedAsk, freed.freedCapacity(),
+                    "cleanup must release the orphaned reservation's remaining capacity");
+            awaitCondition(Duration.ofSeconds(10), () -> {
+                ExposureState cleaned = currentExposure();
+                return cleaned != null
+                        && cleaned.bidUsage() == before.bidUsage()
+                        && cleaned.askUsage() == before.askUsage()
+                        && cleaned.activeReservations() == before.activeReservations();
+            }, "orphaned reservation cleanup did not restore exposure capacity");
+        } finally {
+            if (reservation != null) releaseReservationQuietly(orphanSymbol);
         }
     }
 
@@ -304,6 +336,37 @@ class LocalError5MMCrashAfterReservationTest {
             return out[0] != null;
         }, "quote did not appear for symbol " + symbol + " within " + timeout);
         return out[0];
+    }
+
+    static ReservationResponse createReservation(Quote quote) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(uri(EXPOSURE_RES_PORT, "/reservations"))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(5))
+                .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(quote)))
+                .build();
+        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, resp.statusCode(), "POST /reservations failed: " + resp.body());
+        return JSON.readValue(resp.body(), ReservationResponse.class);
+    }
+
+    static FreedCapacityResponse releaseReservation(String symbol) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(uri(EXPOSURE_RES_PORT, "/reservations/" + symbol + "/release"))
+                .timeout(Duration.ofSeconds(5))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, resp.statusCode(), "POST /reservations/" + symbol + "/release failed: " + resp.body());
+        return JSON.readValue(resp.body(), FreedCapacityResponse.class);
+    }
+
+    static void releaseReservationQuietly(String symbol) {
+        try {
+            releaseReservation(symbol);
+        } catch (Exception ignored) {
+            // already released or never granted
+        }
     }
 
     static ExposureState awaitExposure(Duration timeout) {

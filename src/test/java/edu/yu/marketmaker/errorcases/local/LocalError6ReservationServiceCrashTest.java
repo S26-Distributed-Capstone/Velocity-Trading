@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.yu.marketmaker.model.ExposureState;
 import edu.yu.marketmaker.model.Fill;
+import edu.yu.marketmaker.model.Quote;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -40,7 +41,6 @@ import java.time.Duration;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Error case 6 local end-to-end: no reservation grant means no quote replacement. */
@@ -68,8 +68,8 @@ class LocalError6ReservationServiceCrashTest {
     @Test
     void reservationCrashPreventsQuoteUpdateUntilRestart() throws Exception {
         String symbol = "AAPL";
-        UUID oldQuote = awaitQuoteId(symbol, Duration.ofSeconds(30));
-        assertNotNull(oldQuote, "symbol must have an active quote before the test");
+        Quote oldQuote = awaitQuote(symbol, Duration.ofSeconds(30));
+        UUID oldQuoteId = oldQuote.quoteId();
 
         kill("exposure-reservation");
         awaitCondition(Duration.ofSeconds(30),
@@ -81,15 +81,22 @@ class LocalError6ReservationServiceCrashTest {
 
         for (int i = 0; i < 8; i++) {
             Thread.sleep(1000);
-            assertEquals(oldQuote, currentExchangeQuoteId(symbol),
+            assertEquals(oldQuoteId, currentExchangeQuoteId(symbol),
                     "market maker published a quote without a granted reservation");
         }
+
+        long waitForTtl = Math.max(0L, oldQuote.expiresAt() + 1_000L - System.currentTimeMillis());
+        Thread.sleep(waitForTtl);
+        assertTrue(System.currentTimeMillis() >= oldQuote.expiresAt(),
+                "old quote TTL should have elapsed while exposure-reservation was down");
+        assertEquals(oldQuoteId, currentExchangeQuoteId(symbol),
+                "old quote should remain the only exchange quote until reservation service recovers");
 
         start("exposure-reservation");
         awaitCondition(Duration.ofMinutes(2), () -> {
             submitSyntheticFill(symbol);
             UUID after = currentExchangeQuoteId(symbol);
-            return after != null && !after.equals(oldQuote);
+            return after != null && !after.equals(oldQuoteId);
         }, "quoteId did not rotate after exposure-reservation came back");
     }
 
@@ -304,12 +311,35 @@ class LocalError6ReservationServiceCrashTest {
     }
 
     static UUID awaitQuoteId(String symbol, Duration timeout) {
-        UUID[] out = new UUID[1];
+        return awaitQuote(symbol, timeout).quoteId();
+    }
+
+    static Quote awaitQuote(String symbol, Duration timeout) {
+        Quote[] out = new Quote[1];
         awaitCondition(timeout, () -> {
-            out[0] = currentExchangeQuoteId(symbol);
+            out[0] = currentExchangeQuote(symbol);
             return out[0] != null;
         }, "quote did not appear for symbol " + symbol + " within " + timeout);
         return out[0];
+    }
+
+    static UUID currentExchangeQuoteId(String symbol) {
+        Quote quote = currentExchangeQuote(symbol);
+        return quote == null ? null : quote.quoteId();
+    }
+
+    static Quote currentExchangeQuote(String symbol) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(uri(EXCHANGE_PORT, "/quotes/" + symbol))
+                    .timeout(Duration.ofSeconds(3))
+                    .GET().build();
+            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) return null;
+            return JSON.readValue(resp.body(), Quote.class);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     static ExposureState awaitExposure(Duration timeout) {
@@ -368,21 +398,6 @@ class LocalError6ReservationServiceCrashTest {
             return HTTP.send(req, HttpResponse.BodyHandlers.ofString()).statusCode() == 200;
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    static UUID currentExchangeQuoteId(String symbol) {
-        try {
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(uri(EXCHANGE_PORT, "/quotes/" + symbol))
-                    .timeout(Duration.ofSeconds(3))
-                    .GET().build();
-            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200) return null;
-            String raw = JSON.readTree(resp.body()).path("quoteId").asText(null);
-            return raw == null ? null : UUID.fromString(raw);
-        } catch (Exception e) {
-            return null;
         }
     }
 

@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Error case 4 k3s variant: one MM pod misses a position update, survivors
@@ -73,6 +74,8 @@ class ClusterError4MMCrashBeforePositionUpdateTest {
         assertNotNull(preCrashQuoteId, "expected an active quote before crash");
 
         kill(victimPod);
+        assertTrue(submitSyntheticFill(observedSymbol),
+                "trading-state did not accept the position update while " + victimPod + " was down");
         awaitCondition(Duration.ofMinutes(2),
                 () -> survivorsConverged(
                         victimPort, MM_PORT_TO_POD.size() - 1),
@@ -91,6 +94,8 @@ class ClusterError4MMCrashBeforePositionUpdateTest {
                 observedSymbol, Duration.ofSeconds(30));
 
         kill(victimPod);
+        assertTrue(submitSyntheticFill(observedSymbol),
+                "trading-state did not accept the position update while " + victimPod + " was down");
         awaitCondition(Duration.ofMinutes(2),
                 () -> survivorsConverged(
                         victimPort, MM_PORT_TO_POD.size() - 1),
