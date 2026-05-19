@@ -364,6 +364,32 @@ class SubmittingExternalOrderErrorsClusterTest {
     }
 
     /**
+     * Submit one order directly to the exchange with a caller-supplied id.
+     * Returns the HTTP status code, or -1 on transport failure.
+     */
+    private static int submitOrderDirectlyWithId(String symbol, UUID orderId,
+                                                 int quantity, double limitPrice, String side) {
+        try {
+            java.util.Map<String, Object> body = java.util.Map.of(
+                    "id", orderId.toString(),
+                    "symbol", symbol,
+                    "quantity", quantity,
+                    "limitPrice", limitPrice,
+                    "side", side
+            );
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("http://" + HOST + ":" + EXCHANGE_PORT + "/orders"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(5))
+                    .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
+                    .build();
+            return HTTP.send(req, HttpResponse.BodyHandlers.ofString()).statusCode();
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /**
      * Submit one direct order against the symbol's current quote so it crosses
      * by construction: BUY at askPrice if askQty>0, SELL at bidPrice if
      * bidQty>0. The MM publishes position-aware, skewed quotes (and zeros one
