@@ -112,8 +112,13 @@ class SubmittingExternalOrderErrorsClusterTest {
         awaitHealthy("trading-state",      TRADING_STATE_PORT, Duration.ofMinutes(5));
         awaitHealthy("exchange",           EXCHANGE_PORT,      Duration.ofMinutes(5));
         awaitHealthy("external-publisher", PUBLISHER_PORT,     Duration.ofMinutes(5));
-        driveTrafficUntilEverySymbolHasFill(Duration.ofMinutes(3));
-        System.out.println("[ERR1-3-k8s] stack up, baseline traffic flowing.");
+        // Light baseline: confirm at least one new fill lands. Avoid the
+        // grind-to-fills-on-every-symbol pattern from the local test —
+        // on the cluster, MMs are active and one-sided baseline traffic
+        // pushes positions into the exposure cap, leaving every quote with
+        // qty=0 on one side and breaking subsequent random-price orders.
+        awaitFirstFill(Duration.ofMinutes(2));
+        System.out.println("[ERR1-3-k8s] stack up, order flow confirmed.");
     }
 
     @AfterEach
@@ -166,14 +171,18 @@ class SubmittingExternalOrderErrorsClusterTest {
      */
     @Test
     void retriedOrdersWithFreshIdsProduceIndependentFills() throws Exception {
-        reseedQuietly();
-
         Set<UUID> existingFillIds = new HashSet<>();
         for (Fill f : getAllFills()) existingFillIds.add(f.getId());
 
-        int wave1 = submitOrders(List.of("AAPL"), 5);
-        int wave2 = submitOrders(List.of("AAPL"), 5);
-        assertTrue(wave1 > 0 && wave2 > 0, "both waves must have accepted orders");
+        // Wave 1 + wave 2 of single-order crossing submissions. Each call
+        // reads the current quote and posts an order that crosses by
+        // construction — fresh UUID per order, no dedup at the exchange.
+        int wave1 = 0;
+        for (int i = 0; i < 5; i++) if (submitCrossingOrder("AAPL") != null) wave1++;
+        int wave2 = 0;
+        for (int i = 0; i < 5; i++) if (submitCrossingOrder("AAPL") != null) wave2++;
+        assertTrue(wave1 > 0 && wave2 > 0,
+                "both waves must have accepted orders (wave1=" + wave1 + " wave2=" + wave2 + ")");
 
         awaitCondition(Duration.ofSeconds(30), () -> {
             try {
@@ -355,36 +364,67 @@ class SubmittingExternalOrderErrorsClusterTest {
     }
 
     /**
-     * Drive enough order traffic for trading-state to record a fill on every
-     * seed symbol. Baseline "system is healthy" check. Re-seeds each iteration
-     * because quotes carry a 30s TTL.
+     * Submit one direct order against the symbol's current quote so it crosses
+     * by construction: BUY at askPrice if askQty>0, SELL at bidPrice if
+     * bidQty>0. The MM publishes position-aware, skewed quotes (and zeros one
+     * side at the exposure cap), so reading the live quote and matching it is
+     * the only reliable way to force a fill regardless of position state.
+     *
+     * @return the order id if the exchange accepted (HTTP 200), else null
      */
-    private static void driveTrafficUntilEverySymbolHasFill(Duration timeout) throws Exception {
-        Instant deadline = Instant.now().plus(timeout);
-        Set<String> withFills = new TreeSet<>();
-        while (Instant.now().isBefore(deadline)) {
-            reseedQuietly();
-            submitOrders(new ArrayList<>(SEED_SYMBOLS), 25);
-            for (Fill f : getAllFills()) {
-                if (SEED_SYMBOLS.contains(f.symbol())) withFills.add(f.symbol());
-            }
-            if (withFills.equals(SEED_SYMBOLS)) return;
-            Thread.sleep(1500);
+    private static UUID submitCrossingOrder(String symbol) {
+        Quote q = currentExchangeQuote(symbol);
+        if (q == null) return null;
+        UUID orderId = UUID.randomUUID();
+        int rc;
+        if (q.askQuantity() > 0) {
+            rc = submitOrderDirectlyWithId(symbol, orderId, 1, q.askPrice(), "BUY");
+        } else if (q.bidQuantity() > 0) {
+            rc = submitOrderDirectlyWithId(symbol, orderId, 1, q.bidPrice(), "SELL");
+        } else {
+            return null; // both sides at qty=0 — rare; nothing we can fill
         }
-        throw new AssertionError("baseline traffic did not produce fills for every symbol within "
-                + timeout + "; got=" + withFills);
+        return rc == 200 ? orderId : null;
+    }
+
+    /** One crossing order per seed symbol; returns count accepted. */
+    private static int submitCrossingRound() {
+        int n = 0;
+        for (String s : SEED_SYMBOLS) {
+            if (submitCrossingOrder(s) != null) n++;
+        }
+        return n;
     }
 
     /**
-     * Keep submitting orders until trading-state records strictly more fills
-     * than {@code baselineFillCount}, proving the order path is alive. Rides
-     * out the brief failover window and re-seeds each iteration (30s quote TTL).
+     * Baseline "system is healthy" check — submit crossing rounds until at
+     * least one new fill lands. Lighter than grinding fills on every symbol;
+     * just proves the order path is alive end-to-end before the test injects
+     * a fault.
+     */
+    private static void awaitFirstFill(Duration timeout) {
+        int before = fillCountOrMinusOne();
+        Instant deadline = Instant.now().plus(timeout);
+        while (Instant.now().isBefore(deadline)) {
+            submitCrossingRound();
+            int now = fillCountOrMinusOne();
+            if (now > before) return;
+            sleepQuietly(1500);
+        }
+        throw new AssertionError("baseline traffic produced no new fills within " + timeout);
+    }
+
+    /**
+     * Keep submitting crossing orders until trading-state records strictly more
+     * fills than {@code baselineFillCount}, proving the order path is alive
+     * end-to-end. Rides out the brief failover window. Uses crossing-by-quote
+     * orders, not randomized publisher orders, so the assertion holds even when
+     * MM-published quotes are skewed or one-sided near the exposure cap.
      */
     private static void awaitNewFillsAfter(int baselineFillCount, Duration timeout) {
         Instant deadline = Instant.now().plus(timeout);
         while (Instant.now().isBefore(deadline)) {
-            reseedQuietly();
-            submitOrders(new ArrayList<>(SEED_SYMBOLS), 10);
+            submitCrossingRound();
             int now = fillCountOrMinusOne();
             if (now > baselineFillCount) return;
             sleepQuietly(2000);
