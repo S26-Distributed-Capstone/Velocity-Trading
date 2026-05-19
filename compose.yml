@@ -143,7 +143,7 @@ services:
         aliases:
           - exchange
     environment:
-      - SPRING_PROFILES_ACTIVE=exchange
+      - SPRING_PROFILES_ACTIVE=exchange,fault-injection
       - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - HA_ADVERTISE_HOST=exchange-1
       - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
@@ -162,7 +162,7 @@ services:
         aliases:
           - exchange
     environment:
-      - SPRING_PROFILES_ACTIVE=exchange
+      - SPRING_PROFILES_ACTIVE=exchange,fault-injection
       - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - HA_ADVERTISE_HOST=exchange-2
       - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3
@@ -181,7 +181,7 @@ services:
         aliases:
           - exchange
     environment:
-      - SPRING_PROFILES_ACTIVE=exchange
+      - SPRING_PROFILES_ACTIVE=exchange,fault-injection
       - HA_ZOOKEEPER_CONNECT=zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
       - HA_ADVERTISE_HOST=exchange-3
       - HAZELCAST_MEMBERS=trading-state-1,trading-state-2,trading-state-3,exchange-1,exchange-2,exchange-3,exposure-reservation-1,exposure-reservation-2,exposure-reservation-3

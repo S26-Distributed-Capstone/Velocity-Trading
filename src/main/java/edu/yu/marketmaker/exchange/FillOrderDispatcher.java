@@ -3,9 +3,9 @@ package edu.yu.marketmaker.exchange;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
-import org.springframework.messaging.rsocket.RSocketRequester;
 import org.springframework.stereotype.Component;
 
 import edu.yu.marketmaker.memory.Repository;
@@ -14,6 +14,7 @@ import edu.yu.marketmaker.model.Fill;
 import edu.yu.marketmaker.model.FreedCapacityResponse;
 import edu.yu.marketmaker.model.Quote;
 import edu.yu.marketmaker.model.Side;
+import edu.yu.marketmaker.service.FaultInjector;
 
 import java.util.UUID;
 
@@ -25,25 +26,30 @@ public class FillOrderDispatcher implements OrderDispatcher {
 
     private final Repository<String, Quote> quoteRepository;
     private final FillSender fillSender;
-    private final RSocketRequester reservationRequester;
+    private final ReservationRequester reservationRequester;
+    
+    private final FaultInjector faultInjector;
 
     // Backward-compatible constructor used by isolated unit tests.
     public FillOrderDispatcher(Repository<String, Quote> repository, FillSender fillSender) {
         this.quoteRepository = repository;
         this.fillSender = fillSender;
         this.reservationRequester = null;
+        this.faultInjector = null;
     }
 
     @Autowired
     public FillOrderDispatcher(
             Repository<String, Quote> repository,
             FillSender fillSender,
-            RSocketRequester.Builder rsocketRequesterBuilder,
+            ReservationRequester reservationRequester,
             @Value("${marketmaker.exposure-reservation.host:exposure-reservation}") String reservationHost,
-            @Value("${marketmaker.exposure-reservation.port:7000}") int reservationPort) {
+            @Value("${marketmaker.exposure-reservation.port:7000}") int reservationPort,
+            ObjectProvider<FaultInjector> faultInjectorProvider) {
         this.quoteRepository = repository;
         this.fillSender = fillSender;
-        this.reservationRequester = rsocketRequesterBuilder.tcp(reservationHost, reservationPort);
+        this.reservationRequester = reservationRequester;
+        this.faultInjector = faultInjectorProvider.getIfAvailable();
     }
 
     @Override
@@ -79,10 +85,14 @@ public class FillOrderDispatcher implements OrderDispatcher {
         Side marketMakerSide = order.side() == Side.BUY ? Side.SELL : Side.BUY;
 
         releaseReservedExposure(order.symbol(), marketMakerSide, adjustedQuantity);
+
         applyQuoteFill(quote, order.side(), adjustedQuantity);
 
         Fill fill = new Fill(order.id(), order.symbol(), marketMakerSide, adjustedQuantity, price, quote.quoteId(), timestamp);
         fillSender.sendFill(fill);
+        if (faultInjector != null) {
+            faultInjector.triggerFault(FaultInjector.Event.PROCESS_ORDER, order.symbol());
+        }
     }
 
     private int executableQuantity(Quote quote, ExternalOrder order) {
@@ -112,11 +122,7 @@ public class FillOrderDispatcher implements OrderDispatcher {
         }
 
         Fill fillForReservation = new Fill(UUID.randomUUID(), symbol, side, quantity, 0.0, null, System.currentTimeMillis());
-        FreedCapacityResponse response = reservationRequester
-                .route("reservations." + symbol + ".apply-fill")
-                .data(fillForReservation)
-                .retrieveMono(FreedCapacityResponse.class)
-                .block();
+        FreedCapacityResponse response = reservationRequester.updateReservation(fillForReservation);
 
         if (response == null) {
             throw new OrderValidationException("Exposure reservation apply-fill returned no response for " + symbol);

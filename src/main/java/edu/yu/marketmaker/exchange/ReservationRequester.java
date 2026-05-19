@@ -1,6 +1,8 @@
 package edu.yu.marketmaker.exchange;
 
 import edu.yu.marketmaker.ha.LeaderAwareRSocketClient;
+import edu.yu.marketmaker.model.Fill;
+import edu.yu.marketmaker.model.FreedCapacityResponse;
 import edu.yu.marketmaker.model.Quote;
 import edu.yu.marketmaker.model.ReservationResponse;
 import org.springframework.context.annotation.Profile;
@@ -35,5 +37,11 @@ public class ReservationRequester {
         client.requestResponse("exposure-reservation", "reservations", quote,
                         ReservationResponse.class)
                 .block();
+    }
+
+    public FreedCapacityResponse updateReservation(Fill fill) {
+        return client.requestResponse("exposure-reservation", "reservations." + fill.symbol() + ".apply-fill", fill,
+                        FreedCapacityResponse.class)
+            .block();
     }
 }

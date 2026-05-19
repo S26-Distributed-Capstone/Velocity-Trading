@@ -1,20 +1,34 @@
 package edu.yu.marketmaker.errorcases.local;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
+
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import edu.yu.marketmaker.model.Quote;
+import edu.yu.marketmaker.service.FaultInjector;
+
 public class QuoteUpdateFailTest {
+
+    @BeforeAll
+    static void bootStack() throws Exception {
+        Common.bootStack(7);
+    }
     
     /**
      * Test for error case #7
      */
     @Test
-    void quoteUpdateFails() {
-        // set up
-        // arm fault injector for exchange service
-        // send order
-        // wait
-        // bring back up exchange service
-        // wait
-        // assert that quote is updated
+    void quoteUpdateFails() throws Exception {
+        Common.seedQuotes(List.of("test", "next", "other"));
+        Common.armFaultInjector(FaultInjector.Event.PROCESS_ORDER, "test");
+        Common.submitOrdersViaPublisher(1, List.of("test"));
+        Thread.sleep(20000);
+        Quote quote = Common.currentExchangeQuote("test");
+        System.out.println(quote.askQuantity());
+        System.out.println(quote.bidQuantity());
+        assertTrue(quote.askQuantity() < 1000 || quote.bidQuantity() < 1000);
     }
 }

@@ -5,6 +5,7 @@ import edu.yu.marketmaker.ha.ServiceRegistry;
 import edu.yu.marketmaker.model.ExternalOrder;
 import edu.yu.marketmaker.model.Quote;
 import edu.yu.marketmaker.model.Side;
+import edu.yu.marketmaker.service.FaultInjector;
 import edu.yu.marketmaker.service.ServiceHealth;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -12,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -145,6 +147,26 @@ public class ExternalOrderPublisherController {
         return ResponseEntity.ok(accepted);
     }
 
+    @PostMapping("/test/arm-fault")
+    public ResponseEntity<Boolean> armFault(@RequestParam FaultInjector.Event event, @RequestParam String symbol) {
+        try {
+            sendToExchangeLeader("/test/fault-injection/arm-fault?symbol=" + symbol + "&" + "event=" + event.toString(), "POST", "");
+        } catch (Exception e) {
+            return ResponseEntity.ok(false);
+        }
+        return ResponseEntity.ok(true);
+    }
+
+    @GetMapping("/test/quotes/{symbol}")
+    public ResponseEntity<Quote> getQuote(@PathVariable String symbol) {
+        try {
+            HttpResponse<String> response = sendToExchangeLeader("/quotes/" + symbol, "GET", null);
+            return ResponseEntity.ok(mapper.readValue(response.body(), Quote.class));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+
     /**
      * Send a JSON body to the current exchange leader at {@code pathAndQuery}.
      *
@@ -179,6 +201,7 @@ public class ExternalOrderPublisherController {
             switch (method) {
                 case "PUT" -> b.PUT(publisher);
                 case "POST" -> b.POST(publisher);
+                case "GET" -> b.GET();
                 default -> throw new IllegalArgumentException("unsupported method: " + method);
             }
             try {
