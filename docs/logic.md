@@ -46,9 +46,9 @@ Computed in `ExposureReservationService.determineStatus`:
 
 | Status | Condition |
 |---|---|
-| `GRANTED` | Both sides fully granted (`grantedBid ≥ requestedBid` *and* `grantedAsk ≥ requestedAsk`). |
-| `DENIED`  | Both requested sides got zero. |
-| `PARTIAL` | Anything in between — typically one side full, the other clipped. |
+| `GRANTED` | Both sides fully granted (`grantedBid ≥ requestedBid` *and* `grantedAsk ≥ requestedAsk`). A side with `requestedX = 0` trivially counts as fully granted. |
+| `DENIED`  | Both sides actually asked for capacity (`requestedBid > 0` and `requestedAsk > 0`) and both got zero. |
+| `PARTIAL` | Anything else — typically one side full, the other clipped. Note: a request that only asks for one side and is fully denied on that side resolves to `PARTIAL`, not `DENIED`, because the unrequested side is not considered "denied". |
 
 ### 2.3 Per-side accounting
 
@@ -89,17 +89,17 @@ sequenceDiagram
   participant exch as Exchange
   participant user as External Publisher
 
-  state->>mm: StateSnapshot (position update, version v)
+  state->>mm: StateSnapshot (position update, version v) via RSocket state.stream
   mm->>mm: generateQuote(position, lastFill)<br/>clamp by ±100 position limit
-  mm->>res: POST /reservations (bidQty, askQty)
+  mm->>res: RSocket "reservations" (bidQty, askQty)
   res->>res: release prior reservation for symbol<br/>recompute global bid/ask usage
   res->>mm: ReservationResponse(grantedBid, grantedAsk, status)
   mm->>mm: clip published quote to granted quantities
-  mm->>exch: PUT /quotes/{symbol} (reserved quote, TTL = 30s)
+  mm->>exch: write to shared Hazelcast quote map<br/>(reserved quote, expiresAt = now + 30s)
 
   user->>exch: POST /orders
   exch->>exch: match against active quote<br/>(per-symbol lock)
-  exch->>res: reservations.{symbol}.apply-fill (qty, side)
+  exch->>res: RSocket "reservations.{symbol}.apply-fill" (qty, MM-side)
   res->>res: reduce grantedBid or grantedAsk by fillQty
   exch->>state: send Fill (RSocket state.fills)
   state->>state: update Position, emit next StateSnapshot
@@ -111,6 +111,7 @@ Three things to notice:
 1. **The MM never publishes a quote with quantities the reservation service didn't grant.** `ProductionQuoteGenerator` overwrites its proposed `bidQuantity`/`askQuantity` with `reservation.grantedBidQuantity()` / `grantedAskQuantity()` before saving the quote to the repository.
 2. **Fills, not quotes, are what permanently consume exposure.** A reservation grant is bookkeeping; the firm-wide budget is only really spent when the exchange calls `apply-fill` after matching an order.
 3. **There is no explicit release in the happy path.** Quote refresh atomically supersedes the previous reservation; fills decrement it; nothing else touches it.
+4. **Quote publication is via a shared repository, not HTTP.** The `Repository<String, Quote>` is backed by a Hazelcast `IMap` that both the market-maker and the exchange read/write; `quoteRepository.put(reservedQuote)` is what makes a quote visible to `FillOrderDispatcher`.
 
 ---
 
@@ -134,9 +135,9 @@ flowchart TD
   I --> J
   J --> K["bidQty = min(bidQty, 100 - netQty)<br/>askQty = min(askQty, 100 + netQty)"]
   K --> L[Form proposed quote<br/>bidPrice = refPrice - spread/2<br/>askPrice = refPrice + spread/2<br/>expiresAt = now + 30s]
-  L --> M[POST /reservations]
+  L --> M[RSocket route 'reservations']
   M --> N[Overwrite bidQty/askQty<br/>with granted quantities]
-  N --> O[Save quote to repository<br/>= publish to exchange]
+  N --> O[quoteRepository.put<br/>= visible to exchange via shared Hazelcast map]
 ```
 
 ### 4.1 Per-symbol position clamp
@@ -151,7 +152,7 @@ int maxAllowedAsk = max(0, 100 + position.netQuantity());  // room to sell more
 askQuantity = min(askQuantity, maxAllowedAsk);
 ```
 
-So at `netQuantity = +100` we publish `bidQty = 0` (cannot grow long any further) but can still ask up to 200 (which the firm-wide cap will then trim to 100).
+So at `netQuantity = +100` the bid is forced to `0` (cannot grow long any further); the ask is allowed up to `200` by this clamp alone, though in practice the carry-forward / default-quantity logic upstream keeps the request much smaller, and the firm-wide bid/ask caps of 100 still apply at the reservation step.
 
 ### 4.2 Spread
 
@@ -190,7 +191,7 @@ Note: `QuoteFreshnessKeeper` intentionally bypasses `MarketMaker.handlePosition`
 
 ### 5.1 Out-of-order suppression
 
-`MarketMaker.newVersion` tracks the highest position `version` seen per symbol and discards any snapshot with a strictly older version. This protects against reordering on `state.stream` re-subscribes after transient network blips.
+`MarketMaker.newVersion` tracks the highest position `version` seen per symbol and only forwards a snapshot when `incoming > prev`. That means **equal and older versions are both discarded** — a re-delivery of the same version on a `state.stream` re-subscribe will not re-trigger quoting.
 
 ---
 
@@ -203,19 +204,19 @@ flowchart TD
   O[POST /orders] --> L[Acquire symbol lock]
   L --> Q{Quote exists?}
   Q -- no --> XQ[reject: 'Quote ... does not exist']
-  Q -- yes --> EX{expiresAt > now?}
+  Q -- yes --> EX{now < expiresAt?}
   EX -- no --> XE[reject: 'Quote ... is expired']
-  EX -- yes --> PX{side BUY?}
+  EX -- yes --> PX{order side?}
   PX -- BUY --> LB{limitPrice ≥ askPrice?}
   PX -- SELL --> LS{limitPrice ≤ bidPrice?}
-  LB -- no --> XL1[reject: 'Limit price too low']
-  LS -- no --> XL2[reject: 'Limit price too high']
+  LB -- no --> XL1[reject: 'Limit price too low to cross ask']
+  LS -- no --> XL2[reject: 'Limit price too high to cross bid']
   LB -- yes --> AQ
   LS -- yes --> AQ[adjustedQty = min orderQty, remaining side qty]
   AQ --> Z{adjustedQty == 0?}
   Z -- yes --> X0[reject: 'Order could not be filled']
-  Z -- no --> AF[reservations.symbol.apply-fill]
-  AF --> UQ[decrement remaining qty on the matched side]
+  Z -- no --> AF[RSocket reservations.symbol.apply-fill<br/>with MM-side = opposite of order side]
+  AF --> UQ[decrement remaining qty on the matched side of the quote]
   UQ --> SF[Send Fill to Trading State]
 ```
 
