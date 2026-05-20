@@ -82,6 +82,17 @@ public class ProductionQuoteGenerator implements QuoteGenerator {
         maybeTriggerError10Crash(symbol);
 
         Quote current = quoteRepository.get(symbol).orElse(null);
+        // Error-case 11 (full-system restart): the quote IMap reloads
+        // pre-restart quotes whose 30s TTL has long since lapsed during the
+        // multi-minute kubectl rollout. The error-case-11 docs say the
+        // exchange "expires old quotes" on restart, but no code prunes them.
+        // Treat an expired survivor as nonexistent here so the bootstrap
+        // regen falls into the cold-start branch (default quantities,
+        // reference price of 100) instead of reusing the drifted/depleted
+        // values it would otherwise carry forward.
+        if (current != null && current.expiresAt() <= System.currentTimeMillis()) {
+            current = null;
+        }
 
         double referencePrice = current != null ? midPrice(current) : (lastFill != null ? lastFill.price() : 100.0);
         double halfSpread = targetSpread / 2.0;

@@ -293,9 +293,16 @@ class ClusterError11RecoveryAfterFullSystemRestartTest {
             Thread.sleep(WAVE_INTERVAL_MS);
         }
         long finalFillCount = countFills();
+        // On failure, ask the publisher for the first non-200 it saw — turns
+        // an opaque "accepted=0" into a concrete exchange-side reason
+        // (validation message, leader-guard 503, transport exception, ...).
+        String publisherFailureSample = finalFillCount > postFillCount ? "" : lastPublisherFailureOrEmpty();
         assertTrue(finalFillCount > postFillCount,
                 "post-recovery orders must produce new fills (proving end-to-end pipeline "
-                        + "is back online): pre=" + postFillCount + " final=" + finalFillCount);
+                        + "is back online): pre=" + postFillCount + " final=" + finalFillCount
+                        + (publisherFailureSample.isEmpty()
+                                ? ""
+                                : " — publisher firstFailure: " + publisherFailureSample));
         System.out.println("[ERR11-k8s] end-to-end pipeline functional after restart: "
                 + (finalFillCount - postFillCount) + " new fills");
     }
@@ -414,6 +421,20 @@ class ClusterError11RecoveryAfterFullSystemRestartTest {
             fail("seed-quotes returned " + resp.statusCode() + ": " + resp.body());
         }
         return JSON.readValue(resp.body(), new TypeReference<List<UUID>>() {});
+    }
+
+    private static String lastPublisherFailureOrEmpty() {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create("http://" + HOST + ":" + PUBLISHER_PORT + "/publisher/last-failure"))
+                    .timeout(Duration.ofSeconds(3))
+                    .GET().build();
+            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) return "<last-failure endpoint HTTP " + resp.statusCode() + ">";
+            return resp.body();
+        } catch (Exception e) {
+            return "<last-failure endpoint threw: " + e + ">";
+        }
     }
 
     private static int submitOrdersViaPublisher(int countPerSymbol, List<String> symbols) {

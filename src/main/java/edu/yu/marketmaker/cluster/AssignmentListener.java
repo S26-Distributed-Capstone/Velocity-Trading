@@ -4,8 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.yu.marketmaker.ha.LeaderAwareRSocketClient;
 import edu.yu.marketmaker.marketmaker.MarketMaker;
-import edu.yu.marketmaker.model.Position;
-import edu.yu.marketmaker.model.StateSnapshot;
+import edu.yu.marketmaker.memory.Repository;
+import edu.yu.marketmaker.model.*;
 import jakarta.annotation.PreDestroy;
 import reactor.core.scheduler.Schedulers;
 import org.apache.curator.framework.CuratorFramework;
@@ -44,6 +44,7 @@ public class AssignmentListener implements ApplicationRunner {
     private final ClusterNode clusterNode;
     private final MarketMaker marketMaker;
     private final LeaderAwareRSocketClient rsocketClient;
+    private final Repository<String, Quote> quoteRepository;
     private final ObjectMapper mapper = new ObjectMapper();
 
     private final Set<String> currentAssigned = Collections.synchronizedSet(new HashSet<>());
@@ -53,12 +54,14 @@ public class AssignmentListener implements ApplicationRunner {
                               ZkPaths paths,
                               ClusterNode clusterNode,
                               MarketMaker marketMaker,
-                              LeaderAwareRSocketClient rsocketClient) {
+                              LeaderAwareRSocketClient rsocketClient,
+                              Repository<String, Quote> quoteRepository) {
         this.curator = curator;
         this.paths = paths;
         this.clusterNode = clusterNode;
         this.marketMaker = marketMaker;
         this.rsocketClient = rsocketClient;
+        this.quoteRepository = quoteRepository;
     }
 
     /**
@@ -144,6 +147,21 @@ public class AssignmentListener implements ApplicationRunner {
      * leader-forwarded snapshot would take.
      */
     private void bootstrapQuoteForNewlyAssigned(String symbol) {
+        // Error-case 11 (full-system restart) recovers the pre-restart quote
+        // from durable storage via the MapStore. Regenerating it here with
+        // lastFill=null would read the (possibly depleted) recovered
+        // quantities, skip the inventory-skew branch in
+        // ProductionQuoteGenerator, and republish a fresh-timestamped quote
+        // that still has 0 quantity on one or both sides — silently breaking
+        // the post-recovery order pipeline. Trust the durable value:
+        // state.stream's initial snapshot carries the position's lastFill and
+        // will drive a proper fill-aware regen on the first emission.
+        Optional<Quote> existing = quoteRepository.get(symbol);
+        if (existing.isPresent() && existing.get().expiresAt() > System.currentTimeMillis()) {
+            log.info("skipping bootstrap quote for {} — durable quote still valid (expiresAt={})",
+                    symbol, existing.get().expiresAt());
+            return;
+        }
         rsocketClient.requestResponse(TRADING_STATE_SERVICE,
                         "positions." + symbol, "", Position.class)
                 // version=-1 so the first real position update (which starts
