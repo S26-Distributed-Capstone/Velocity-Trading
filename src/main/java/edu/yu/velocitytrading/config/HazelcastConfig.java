@@ -17,7 +17,7 @@ import com.hazelcast.config.TcpIpConfig;
 import java.util.UUID;
 
 /**
- * Hazelcast configuration for the Market Maker application.
+ * Hazelcast configuration for the Velocity Trading application.
  * Configures an embedded Hazelcast instance with MapStores
  * backed by PostgreSQL for data persistence.
  */

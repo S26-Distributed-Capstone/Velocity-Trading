@@ -1,5 +1,5 @@
 /**
- * In-memory data access abstractions for the Market Maker application.
+ * In-memory data access abstractions for the Velocity Trading application.
  *
  * <p>This package provides a generic repository abstraction and its Hazelcast-backed
  * implementation for distributed in-memory storage:

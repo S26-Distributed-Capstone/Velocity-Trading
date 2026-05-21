@@ -1,5 +1,5 @@
 /**
- * Root package for the Market Maker application.
+ * Root package for the Velocity Trading application.
  *
  * <p>A Spring Boot application that acts as a market maker, managing order flow,
  * position tracking, exposure reservation, and exchange interactions with distributed

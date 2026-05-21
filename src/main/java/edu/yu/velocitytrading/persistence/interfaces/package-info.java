@@ -1,5 +1,5 @@
 /**
- * Persistence interfaces for the Market Maker application.
+ * Persistence interfaces for the Velocity Trading application.
  *
  * <p>This package defines the contracts for JPA-based persistence infrastructure,
  * providing abstractions over Spring Data repositories and map store integrations

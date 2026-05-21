@@ -1,5 +1,5 @@
 /**
- * Trading state management for the Market Maker application.
+ * Trading state management for the Velocity Trading application.
  *
  * <p>This package provides services and utilities for managing, tracking, and
  * snapshotting the current position trading state of the market maker.

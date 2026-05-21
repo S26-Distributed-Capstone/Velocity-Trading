@@ -1,5 +1,5 @@
 /**
- * ZooKeeper-backed clustering for the Market Maker application.
+ * ZooKeeper-backed clustering for the Velocity Trading application.
  *
  * Handles node membership, leader election, and symbol-to-node assignment across
  * a fleet of market-maker JVMs. Each ticker is sharded to exactly one node; this

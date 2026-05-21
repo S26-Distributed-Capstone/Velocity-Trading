@@ -1,10 +1,10 @@
-# Distributed Market Maker
+# Velocity Trading
 
 **Team Members:** Tani Diament, Shimmie Hahn, Yisroel Newmark, Matias Salem
 
 ## Overview
 
-> Distributed Market Maker that consumes exchange data and publishes quotes in real time, executing trades against them across a fault-tolerant cluster.
+> A distributed market maker that consumes exchange data and publishes quotes in real time, executing trades against them across a fault-tolerant cluster.
 
 What makes the system interesting:
 
@@ -33,7 +33,7 @@ For the production K3s deployment (air-gapped image bundling, ZK quorum, Headlam
 ## Repo layout
 
 ```
-src/main/java/edu/yu/marketmaker/
+src/main/java/edu/yu/velocitytrading/
 ├── exchange/              # Order matching, fill emission (REST + RSocket)
 ├── state/                 # TradingStateService — positions/fills owner; state.stream
 ├── exposurereservation/   # Global exposure budget; reservation lifecycle

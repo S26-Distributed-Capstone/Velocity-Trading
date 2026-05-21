@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * k3s/Kubernetes variant of
- * {@code edu.yu.marketmaker.errorcases.local.LocalError11RecoveryAfterFullSystemRestartTest}.
+ * {@code edu.yu.velocitytrading.errorcases.local.LocalError11RecoveryAfterFullSystemRestartTest}.
  *
  * <p>Drives the cluster into a non-trivial state (fills, positions, quotes,
  * reservations), then {@code kubectl rollout restart}s every app-tier

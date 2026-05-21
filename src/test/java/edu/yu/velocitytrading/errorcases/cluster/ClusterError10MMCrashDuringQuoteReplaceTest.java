@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * k3s/Kubernetes variant of
- * {@code edu.yu.marketmaker.errorcases.local.LocalError10MMCrashDuringQuoteReplaceTest}.
+ * {@code edu.yu.velocitytrading.errorcases.local.LocalError10MMCrashDuringQuoteReplaceTest}.
  *
  * <p>Same end-to-end assertions for error case 10, but talks to a running
  * k3s cluster via NodePorts instead of bringing up a docker-compose stack.

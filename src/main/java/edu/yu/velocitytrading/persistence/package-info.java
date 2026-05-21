@@ -1,5 +1,5 @@
 /**
- * JPA-based persistence infrastructure for the Market Maker application.
+ * JPA-based persistence infrastructure for the Velocity Trading application.
  *
  * <p>This package provides the persistence layer used to back Hazelcast's distributed
  * in-memory storage with durable JPA/database storage via Hazelcast {@code MapStore}

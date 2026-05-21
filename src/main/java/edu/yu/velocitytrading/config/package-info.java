@@ -1,5 +1,5 @@
 /**
- * Hazelcast configuration classes for the Market Maker application.
+ * Hazelcast configuration classes for the Velocity Trading application.
  *
  * <p>This package contains Spring and infrastructure configuration, including:
  * <ul>

@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * k3s/Kubernetes variant of
- * {@code edu.yu.marketmaker.errorcases.local.SubmittingExternalOrderErrorsLocalTest}.
+ * {@code edu.yu.velocitytrading.errorcases.local.SubmittingExternalOrderErrorsLocalTest}.
  *
  * <p>Same HA failover scenarios for "Submitting External Orders" (error cases
  * 1-3 in {@code docs/error-cases.md}), but run against a live k3s cluster
