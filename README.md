@@ -12,7 +12,7 @@
 
 What makes the system interesting:
 
-- **14-node K3s cluster** (3 control planes + 11 workers) running 7 market-maker pods and three replicated upstream services (Exchange, Trading State, Exposure Reservation) each as 1 leader + 2 hot-backup replicas.
+- **14-node K3s cluster** (3 control plane nodes + 11 worker nodes) running 7 market-maker pods and three replicated upstream services (Exchange, Trading State, Exposure Reservation) each as 1 leader + 2 hot-backup replicas.
 - **Durable in-memory state** — every IMap (`positions`, `fills`, `quotes`, `reservations`, `external-orders`) is write-through via a JPA `MapStore` to a single PostgreSQL StatefulSet, with `InitialLoadMode = EAGER` so a full cluster restart rebuilds state with no operator intervention.
 - **ZooKeeper-coordinated failover** — Curator `LeaderLatch` elects the writable replica per service; clients resolve the current leader via an ephemeral `/mm/endpoints/{svc}` znode, so failover is invisible to callers.
 
