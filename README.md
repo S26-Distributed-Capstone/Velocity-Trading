@@ -8,7 +8,7 @@
 
 ## Overview
 
-Market makers are the middle men in modern trading activity who provide liquidity to an exchange by quoting buy and sell prices on assets. The market maker profits off the bid-ask spread while managing the underlying risk of its positions. The system must handle massive volumes of orders while maintaining consistent state throughout the cluster.
+Market makers are the middlemen in modern trading activity who provide liquidity to an exchange by quoting buy and sell prices on assets. The market maker profits off the bid-ask spread while managing the underlying risk of its positions. The system must handle massive volumes of orders while maintaining consistent state throughout the cluster.
 
 What makes the system interesting:
 
